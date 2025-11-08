@@ -3,8 +3,12 @@
   "name": "NeuroNudge",
   "version": "1.0.0",
   "description": "Privacy-first focus and mental-energy coach.",
-  "permissions": ["idle", "storage", "notifications", "tabs"],
-  "background": { "service_worker": "background.js" },
+  "permissions": ["idle", "storage", "notifications", "tabs", "tts", "alarms"],
+  "host_permissions": [
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "background": { "service_worker": "background.js", "type": "module" },
   "action": { "default_popup": "popup.html" },
   "icons": { "128": "icons/icon128.png" }
 }
