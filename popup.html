@@ -32,6 +32,10 @@
     ul.nudges li { font-size: 12px; color: #1e293b; }
     ul.nudges span { display: block; color: #64748b; font-size: 11px; }
     .disclaimer { font-size: 11px; color: #94a3b8; text-align: center; margin: 8px 0 0; }
+    .metrics { display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; }
+    .metric { flex: 1; }
+    .metric-value { font-size: 22px; font-weight: 600; color: #0f172a; }
+    .metric-status { margin-top: 6px; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -58,6 +62,21 @@
         <li><em class="muted">No data yet.</em></li>
       </ul>
     </details>
+  </section>
+
+  <section class="card">
+    <div class="section-title">Typing pace</div>
+    <div class="metrics">
+      <div class="metric">
+        <div id="kpmAvg" class="metric-value">0</div>
+        <div class="muted">Keys/min (last 5 min)</div>
+      </div>
+      <div class="metric">
+        <div id="kpmTotal" class="metric-value">0</div>
+        <div class="muted">Total keys today</div>
+      </div>
+    </div>
+    <div id="kpmStatus" class="muted metric-status">No typing detected yet.</div>
   </section>
 
   <section class="card">

@@ -37,5 +37,6 @@ form.addEventListener("submit", async (event) => {
   };
   await chrome.storage.local.set({ rules: payload });
   toastEl.textContent = "Rules saved!";
+  // Clear the status message quickly so it does not linger.
   setTimeout(() => (toastEl.textContent = ""), 2000);
 });

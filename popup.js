@@ -10,6 +10,9 @@ const idleTimeEl = document.getElementById("idleTime");
 const siteListEl = document.getElementById("siteList");
 const moodSelect = document.getElementById("mood");
 const privacyToggle = document.getElementById("privacyToggle");
+const kpmAvgEl = document.getElementById("kpmAvg");
+const kpmTotalEl = document.getElementById("kpmTotal");
+const kpmStatusEl = document.getElementById("kpmStatus");
 const nudgeListEl = document.getElementById("nudgeList");
 const saveMoodBtn = document.getElementById("saveMood");
 const pingBtn = document.getElementById("ping");
@@ -25,7 +28,9 @@ async function refresh() {
     "userMood",
     "privacyMode",
     "nudgeLog",
-    "dailyTimeLog"
+    "dailyTimeLog",
+    "kpmLog",
+    "kpmLive"
   ]);
 
   const todaySites = await getTodaySummary(storage.dailyTimeLog);
@@ -54,6 +59,11 @@ async function refresh() {
   const todaysNudges = nudgeLog.filter((item) => item.day === todayKey());
   nudgeCountEl.textContent = `Today: ${todaysNudges.length} nudges`;
   renderNudges(nudgeLog);
+
+  const kpmSnapshot = summarizeKpm(storage.kpmLog, storage.kpmLive, storage.privacyMode);
+  if (kpmAvgEl) kpmAvgEl.textContent = kpmSnapshot.avg5.toString();
+  if (kpmTotalEl) kpmTotalEl.textContent = kpmSnapshot.total.toString();
+  if (kpmStatusEl) kpmStatusEl.textContent = kpmSnapshot.status;
 
   moodSelect.value = storage.userMood || "neutral";
   privacyToggle.checked = Boolean(storage.privacyMode);
@@ -87,6 +97,44 @@ async function getTodaySummary(passedLog) {
     })
     .filter((entry) => entry.seconds > 0)
     .sort((a, b) => b.seconds - a.seconds);
+}
+
+function summarizeKpm(kpmLog = {}, kpmLive = {}, privacyEnabled = false) {
+  const todayKeyStr = todayKey();
+  const today = kpmLog?.[todayKeyStr] || {};
+  const minutes = { ...(today.minutes || {}) };
+  const storedTotal = Math.max(0, Math.round(today.rollup?.totalKeys || 0));
+  const pendingMinute = typeof kpmLive?.minuteTs === "number" ? kpmLive.minuteTs : null;
+  const pendingCount = Math.max(0, Math.round(kpmLive?.pending || 0));
+  const pendingIsToday =
+    pendingMinute && new Date(pendingMinute).toISOString().split("T")[0] === todayKeyStr;
+  if (pendingIsToday && pendingCount > 0) {
+    minutes[pendingMinute] = (minutes[pendingMinute] || 0) + pendingCount;
+  }
+  const now = Date.now();
+  const floorNow = now - (now % (60 * 1000));
+  let buckets = 0;
+  let sum = 0;
+  for (let i = 0; i < 5; i += 1) {
+    const ts = floorNow - i * 60 * 1000;
+    if (minutes[ts]) {
+      sum += Number(minutes[ts]) || 0;
+      buckets += 1;
+    }
+  }
+  const avg = buckets ? Math.round(sum / buckets) : 0;
+  const total = storedTotal + (pendingIsToday ? pendingCount : 0);
+  const lastMinuteCount = Math.round(minutes[floorNow] || 0);
+  const status = privacyEnabled
+    ? "Privacy mode active — typing paused."
+    : total > 0
+      ? `Last minute: ${lastMinuteCount} keys`
+      : "No typing detected yet.";
+  return {
+    avg5: avg,
+    total,
+    status
+  };
 }
 
 function todayKey() {

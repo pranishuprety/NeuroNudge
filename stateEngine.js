@@ -95,3 +95,21 @@ export async function getCurrentState(rules = {}) {
   });
   return state;
 }
+
+export async function getRecentKpmAvg(minutesBack = 5) {
+  const day = new Date().toISOString().split("T")[0];
+  const { kpmLog = {} } = await chrome.storage.local.get("kpmLog");
+  const minutes = kpmLog[day]?.minutes || {};
+  const now = Date.now();
+  const floorNow = now - (now % (60 * 1000));
+  let total = 0;
+  let buckets = 0;
+  for (let i = 0; i < minutesBack; i += 1) {
+    const ts = floorNow - i * 60 * 1000;
+    if (minutes[ts]) {
+      total += minutes[ts];
+      buckets += 1;
+    }
+  }
+  return buckets ? total / buckets : 0;
+}

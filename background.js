@@ -13,6 +13,8 @@ const RULES_REFRESH_ALARM = "neuro-rules-refresh";
 const MAX_TRACKING_DELTA_SECONDS = 120;
 const RETAIN_DAYS = 30;
 const RULES_REFRESH_MINUTES = 10;
+const KPM_MINUTE_MS = 60 * 1000;
+const KPM_MAX_BATCH = 1200;
 const DEFAULT_RULES = {
   breakInterval: 45,
   driftSensitivity: "medium",
@@ -34,6 +36,8 @@ let lastTickTs = Date.now();
 let lastActiveTab = null;
 let lastTrackedHost = null;
 let rulesConfig = { ...DEFAULT_RULES };
+let kpmMinuteBucket = 0;
+let kpmMinuteTs = null;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.notifications.create({
@@ -68,6 +72,7 @@ async function bootstrap() {
   await ensureTrackingAlarm();
   await hydrateTimeEngine();
   await loadRules();
+  await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
 
   const initialIdleState = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
   currentIdleState = normalizeIdleState(initialIdleState);
@@ -120,6 +125,9 @@ async function bootstrap() {
       if (privacyMode) {
         lastActiveTab = null;
         lastTrackedHost = null;
+        kpmMinuteBucket = 0;
+        kpmMinuteTs = null;
+        updateLiveKpm(null, 0).catch((error) => console.warn("KPM live reset failed", error));
       } else {
         refreshActiveTab().catch((error) => console.warn("Privacy resume capture error", error));
       }
@@ -147,7 +155,11 @@ async function bootstrap() {
     }
   });
 
-  chrome.runtime.onMessage.addListener((message, _, sendResponse) => {
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === "kpm:batch") {
+      handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
+      return false;
+    }
     if (message?.type === "nudges:trigger") {
       evaluateStateAndNudge("manual", { force: true })
         .then((state) => sendResponse({ state }))
@@ -280,6 +292,12 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     await logTimeForHost(loggedHost, elapsedSeconds);
   }
 
+  try {
+    await flushPendingKpm(now);
+  } catch (error) {
+    console.warn("KPM flush on tick failed", error);
+  }
+
   lastTickTs = now;
   await chrome.storage.local.set({ lastTickTs: now });
 
@@ -297,6 +315,7 @@ async function logTimeForHost(host, addSeconds) {
   const { dailyTimeLog = {}, engineMeta = {} } = await chrome.storage.local.get(["dailyTimeLog", "engineMeta"]);
   if (day !== engineMeta.lastPersistedDay) {
     pruneOldDays(dailyTimeLog, day);
+    await rolloverKpmLogs(day);
     engineMeta.lastPersistedDay = day;
   }
   if (!dailyTimeLog[day]) dailyTimeLog[day] = {};
@@ -322,6 +341,87 @@ function pruneOldDays(log, currentDayStr) {
   if (removed) {
     console.log(`[Engine] Pruned ${removed} old day(s)`);
   }
+}
+
+async function handleKpmBatch(message, sender) {
+  if (!sender?.tab?.active) return;
+  if (!sender?.tab?.url || !/^https?:/.test(sender.tab.url)) return;
+  if (privacyMode) return;
+
+  const { privacyMode: storedPrivacy } = await chrome.storage.local.get("privacyMode");
+  if (storedPrivacy) return;
+
+  const idle = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
+  if (idle !== "active") return;
+
+  const now = Date.now();
+  const minute = floorToMinute(now);
+
+  if (kpmMinuteTs !== null && minute !== kpmMinuteTs && kpmMinuteBucket > 0) {
+    try {
+      await flushKpmMinute(kpmMinuteTs, kpmMinuteBucket);
+    } catch (error) {
+      console.warn("KPM flush on minute rollover failed", error);
+    }
+    kpmMinuteBucket = 0;
+  }
+
+  kpmMinuteTs = minute;
+
+  const add = Math.max(0, Math.min(KPM_MAX_BATCH, Number(message.count) || 0));
+  if (add <= 0) return;
+  kpmMinuteBucket = Math.min(kpmMinuteBucket + add, KPM_MAX_BATCH);
+  await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
+}
+
+async function flushPendingKpm(now) {
+  if (!kpmMinuteTs || kpmMinuteBucket <= 0) return;
+  await flushKpmMinute(kpmMinuteTs, kpmMinuteBucket);
+  kpmMinuteBucket = 0;
+  kpmMinuteTs = floorToMinute(now);
+  await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
+}
+
+async function flushKpmMinute(minuteTs, count) {
+  if (!minuteTs || !count) return;
+  const day = todayKey();
+  const { kpmLog = {} } = await chrome.storage.local.get("kpmLog");
+  if (!kpmLog[day]) kpmLog[day] = { minutes: {}, rollup: { totalKeys: 0 } };
+  const dayObj = kpmLog[day];
+  dayObj.minutes[minuteTs] = (dayObj.minutes[minuteTs] || 0) + count;
+  dayObj.rollup.totalKeys = (dayObj.rollup.totalKeys || 0) + count;
+  await chrome.storage.local.set({ kpmLog });
+}
+
+async function rolloverKpmLogs(currentDay) {
+  const { kpmLog = {} } = await chrome.storage.local.get("kpmLog");
+  pruneOldKpm(kpmLog, currentDay);
+  await chrome.storage.local.set({ kpmLog });
+  await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
+}
+
+function pruneOldKpm(kpmLog, currentDayStr) {
+  const today = new Date(currentDayStr);
+  for (const key of Object.keys(kpmLog)) {
+    const diffDays = (today - new Date(key)) / (1000 * 60 * 60 * 24);
+    if (diffDays > RETAIN_DAYS) {
+      delete kpmLog[key];
+    }
+  }
+}
+
+function floorToMinute(timestamp) {
+  return timestamp - (timestamp % KPM_MINUTE_MS);
+}
+
+async function updateLiveKpm(minuteTs, pending) {
+  const normalizedPending = Math.max(0, Math.round(pending || 0));
+  await chrome.storage.local.set({
+    kpmLive: {
+      minuteTs: typeof minuteTs === "number" && normalizedPending > 0 ? minuteTs : null,
+      pending: normalizedPending
+    }
+  });
 }
 
 async function seedTimeLogStorage() {
