@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "NeuroNudge",
+  "version": "1.0.0",
+  "description": "Privacy-first focus and mental-energy coach.",
+  "permissions": ["idle", "storage", "notifications", "tabs"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html" },
+  "icons": { "128": "icons/icon128.png" }
+}

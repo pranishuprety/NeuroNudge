@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>NeuroNudge</title>
+  <style>
+    body { font-family: system-ui, sans-serif; width: 260px; padding: 12px; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .stat { margin: 6px 0; }
+    button { padding: 6px 10px; border: none; border-radius: 6px; background: #2563eb; color: #fff; cursor: pointer; }
+    button:hover { background: #1e40af; }
+    select { width: 100%; padding: 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>NeuroNudge</h1>
+  <div id="status" class="stat">Status: loading…</div>
+  <div id="nudges" class="stat">Total nudges: 0</div>
+  <label class="stat" for="mood">How are you feeling?</label>
+  <select id="mood">
+    <option value="neutral">Neutral</option>
+    <option value="tired">Tired</option>
+    <option value="distracted">Distracted</option>
+    <option value="focused">Focused</option>
+  </select>
+  <div class="stat">
+    <button id="saveMood">Save mood</button>
+    <button id="ping">Give me a nudge</button>
+  </div>
+  <p style="font-size:12px;color:#666;margin-top:6px;">All data stays local.</p>
+  <script src="popup.js"></script>
+</body>
+</html>
