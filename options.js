@@ -1,6 +1,8 @@
 // options.js
 // Loads and saves NeuroNudge rule preferences so the background worker can
 // tailor state detection and nudging cadence.
+// comment from Rahul to check
+
 
 // commet from Pranish to check
 
