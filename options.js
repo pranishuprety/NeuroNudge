@@ -46,7 +46,7 @@ form.addEventListener("submit", async (event) => {
   setTimeout(() => (toastEl.textContent = ""), 2000);
 });
 
-// ---- Domain classification (Step 3) ----
+
 const ruleKeyEl = document.getElementById("ruleKey");
 const ruleValueEl = document.getElementById("ruleValue");
 const addRuleBtn = document.getElementById("addRule");

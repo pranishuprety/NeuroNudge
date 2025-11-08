@@ -15,11 +15,10 @@ const RETAIN_DAYS = 30;
 const RULES_REFRESH_MINUTES = 10;
 const KPM_MINUTE_MS = 60 * 1000;
 const KPM_MAX_BATCH = 1200;
-// ===== Step 3: Rules/Classification + Daily Summary =====
 const SUMMARY_PRUNE_DAYS = 30;
 let ruleCache = { exact: new Map(), regex: [] };
 
-// WOW state
+
 let flowState = { active: false, startAt: 0 };
 let lastBreakNudgeAt = 0;
 const BREAK_COOLDOWN_MS = 20 * 60 * 1000;
