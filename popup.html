@@ -4,25 +4,33 @@
   <meta charset="UTF-8" />
   <title>NeuroNudge</title>
   <style>
-    body { font-family: "Inter", system-ui, sans-serif; width: 280px; padding: 14px; margin: 0; background: #f8fafc; color: #0f172a; }
-    h1 { font-size: 18px; margin: 0 0 10px; }
-    .card { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08); }
-    .state-value { font-size: 20px; font-weight: 600; margin: 4px 0; text-transform: capitalize; }
+    body { font-family: "Inter", system-ui, sans-serif; width: 280px; margin: 0; padding: 14px; background: #f8fafc; color: #0f172a; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .card { background: #fff; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(15,23,42,.1); }
+    .section-title { font-size: 13px; font-weight: 600; letter-spacing: .04em; color: #475569; text-transform: uppercase; margin-bottom: 6px; }
+    .state { display: flex; justify-content: space-between; align-items: center; }
+    .state-value { font-size: 20px; font-weight: 600; text-transform: capitalize; }
     .muted { color: #64748b; font-size: 12px; }
-    .section-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; text-transform: uppercase; color: #475569; letter-spacing: 0.04em; }
-    .bar { width: 100%; height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; margin: 6px 0; }
-    .bar-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #0ea5e9); transition: width 0.3s ease; }
+    .bar { width: 100%; height: 12px; border-radius: 999px; background: #e2e8f0; overflow: hidden; margin: 6px 0; }
+    .bar-fill { height: 100%; width: 0%; background: linear-gradient(90deg, #0ea5e9, #2563eb); transition: width .3s ease; }
     .bar-labels { display: flex; justify-content: space-between; font-size: 12px; color: #475569; }
-    select, button { width: 100%; border-radius: 8px; border: 1px solid #cbd5f5; padding: 8px; font-size: 14px; box-sizing: border-box; }
-    button { background: #2563eb; color: #fff; border: none; margin-top: 8px; cursor: pointer; }
-    button.secondary { background: transparent; color: #1d4ed8; border: 1px solid #bfdbfe; }
-    button:hover { background: #1d4ed8; }
-    button.secondary:hover { background: #e0edff; }
-    .toggle { display: flex; align-items: center; font-size: 13px; margin-top: 8px; gap: 8px; color: #0f172a; }
-    .toggle input { accent-color: #2563eb; }
-    ul { list-style: none; padding: 0; margin: 0; }
-    li { font-size: 12px; margin-bottom: 6px; color: #1e293b; }
-    li span { display: block; color: #64748b; font-size: 11px; }
+    details { border-top: 1px solid #e2e8f0; padding-top: 8px; margin-top: 8px; }
+    summary { cursor: pointer; font-weight: 600; font-size: 13px; list-style: none; }
+    summary::marker { display: none; }
+    .site-list { list-style: none; padding: 6px 0 0; margin: 0; display: grid; row-gap: 4px; }
+    .site-list li { display: flex; justify-content: space-between; font-size: 12px; color: #0f172a; }
+    .site-list span { color: #475569; }
+    .site-list strong { font-size: 12px; }
+    select, button, input[type="checkbox"] { font: inherit; }
+    select, button { width: 100%; border-radius: 8px; padding: 8px; box-sizing: border-box; margin-top: 6px; }
+    select { border: 1px solid #cbd5f5; background: #fff; }
+    button { border: none; color: #fff; background: #2563eb; cursor: pointer; }
+    button.secondary { background: transparent; border: 1px solid #bfdbfe; color: #1d4ed8; }
+    button:disabled { opacity: .6; cursor: wait; }
+    label.toggle { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 8px; }
+    ul.nudges { list-style: none; padding: 0; margin: 0; display: grid; row-gap: 6px; }
+    ul.nudges li { font-size: 12px; color: #1e293b; }
+    ul.nudges span { display: block; color: #64748b; font-size: 11px; }
     .disclaimer { font-size: 11px; color: #94a3b8; text-align: center; margin: 8px 0 0; }
   </style>
 </head>
@@ -31,30 +39,36 @@
 
   <section class="card">
     <div class="section-title">Current state</div>
-    <div id="stateValue" class="state-value">…</div>
-    <div id="nudgeCount" class="muted">Total nudges: 0</div>
+    <div class="state">
+      <div id="stateValue" class="state-value">…</div>
+      <div id="nudgeCount" class="muted">Today: 0 nudges</div>
+    </div>
   </section>
 
   <section class="card">
-    <div class="section-title">Today's focus vs idle</div>
-    <div class="bar">
-      <div id="focusBar" class="bar-fill" style="width:0%;"></div>
-    </div>
+    <div class="section-title">Today's Focus vs Idle</div>
+    <div class="bar"><div id="focusBar" class="bar-fill"></div></div>
     <div class="bar-labels">
       <span id="focusTime">Focus: 0m</span>
       <span id="idleTime">Idle: 0m</span>
     </div>
+    <details id="siteDetails">
+      <summary>Per-site focus</summary>
+      <ul id="siteList" class="site-list">
+        <li><em class="muted">No data yet.</em></li>
+      </ul>
+    </details>
   </section>
 
   <section class="card">
-    <div class="section-title">Mood check-in</div>
+    <div class="section-title">Mood & privacy</div>
     <select id="mood">
       <option value="focused">😌 Focused</option>
       <option value="distracted">😕 Distracted</option>
       <option value="tired">😩 Tired</option>
       <option value="neutral">😐 Neutral</option>
     </select>
-    <button id="saveMood">Save mood</button>
+    <button id="saveMood">Save Mood</button>
     <label class="toggle">
       <input type="checkbox" id="privacyToggle" />
       <span>Privacy Mode (pause domain tracking)</span>
@@ -64,8 +78,8 @@
 
   <section class="card">
     <div class="section-title">Recent nudges</div>
-    <ul id="nudgeList">
-      <li>No nudges yet.</li>
+    <ul id="nudgeList" class="nudges">
+      <li class="muted">No nudges yet.</li>
     </ul>
   </section>
 

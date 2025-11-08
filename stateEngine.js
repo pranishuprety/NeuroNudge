@@ -5,16 +5,18 @@
 
 const SUMMARY_KEY = "activitySummary";
 const TEN_MINUTES_MS = 10 * 60 * 1000;
-const DRIFT_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
-const OVERLOAD_THRESHOLD_MS = 45 * 60 * 1000;
+const DEFAULT_DRIFT_IDLE_MS = 5 * 60 * 1000;
+const DEFAULT_OVERLOAD_MS = 45 * 60 * 1000;
 const IDLE_RESET_MS = 2 * 60 * 1000;
+const DRIFT_SWITCH_THRESHOLDS = { low: 6, medium: 4, high: 3 };
+const DRIFT_IDLE_THRESHOLDS = { low: 7, medium: 5, high: 3 };
 
 const getTodayKey = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 };
 
-export { SUMMARY_KEY, TEN_MINUTES_MS, DRIFT_IDLE_THRESHOLD_MS, OVERLOAD_THRESHOLD_MS, IDLE_RESET_MS };
+export { SUMMARY_KEY, TEN_MINUTES_MS, IDLE_RESET_MS };
 
 export function createEmptySummary(date = getTodayKey()) {
   const now = Date.now();
@@ -55,25 +57,40 @@ export async function getNormalizedSummary() {
   return normalizeSummary(stored[SUMMARY_KEY]);
 }
 
-export function determineState(summary) {
+function resolveThresholds(rules = {}) {
+  const sensitivity = rules.driftSensitivity || "medium";
+  const switchThreshold = DRIFT_SWITCH_THRESHOLDS[sensitivity] ?? DRIFT_SWITCH_THRESHOLDS.medium;
+  const idleThresholdMs = (DRIFT_IDLE_THRESHOLDS[sensitivity] ?? DRIFT_IDLE_THRESHOLDS.medium) * 60 * 1000;
+  const breakMinutes = Math.max(15, Number(rules.breakInterval) || DEFAULT_OVERLOAD_MS / 60000);
+  return {
+    switchThreshold,
+    idleThresholdMs: idleThresholdMs || DEFAULT_DRIFT_IDLE_MS,
+    overloadThresholdMs: breakMinutes * 60 * 1000
+  };
+}
+
+export function determineState(summary, rules = {}) {
   const now = Date.now();
   const switchCount = summary.domainSwitches.length;
   const idleElapsed = summary.lastState === "idle" ? now - summary.lastIdleAt : 0;
   const effectiveFocusStreak =
     summary.focusStreakMs + (summary.lastState === "active" ? now - summary.lastActiveAt : 0);
-  const hasDrifted = switchCount > 4 || idleElapsed >= DRIFT_IDLE_THRESHOLD_MS;
-  const hasOverloaded = effectiveFocusStreak >= OVERLOAD_THRESHOLD_MS && summary.lastIdleDurationMs < IDLE_RESET_MS;
+  const thresholds = resolveThresholds(rules);
+  const hasDrifted = switchCount > thresholds.switchThreshold || idleElapsed >= thresholds.idleThresholdMs;
+  const hasOverloaded =
+    effectiveFocusStreak >= thresholds.overloadThresholdMs && summary.lastIdleDurationMs < IDLE_RESET_MS;
   if (hasOverloaded) return "overload";
   if (hasDrifted) return "drift";
   return "steady";
 }
 
-export async function getCurrentState() {
+export async function getCurrentState(rules = {}) {
   const summary = await getNormalizedSummary();
-  const state = determineState(summary);
+  const state = determineState(summary, rules);
   await chrome.storage.local.set({
     [SUMMARY_KEY]: summary,
     focusState: state,
+    currentState: state,
     lastStateComputedAt: Date.now()
   });
   return state;

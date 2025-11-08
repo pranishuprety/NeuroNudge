@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>NeuroNudge Rules</title>
+  <style>
+    body { font-family: "Inter", system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px 40px; color: #0f172a; background: #f8fafc; }
+    h1 { font-size: 24px; margin-bottom: 4px; }
+    p { color: #475569; margin-top: 0; }
+    form { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 6px rgba(15,23,42,.08); display: grid; row-gap: 16px; }
+    label { font-weight: 600; font-size: 14px; display: block; margin-bottom: 4px; }
+    input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #cbd5f5; font: inherit; box-sizing: border-box; }
+    .field { display: grid; row-gap: 6px; }
+    .checkbox { display: flex; gap: 8px; align-items: center; }
+    button { border: none; background: #2563eb; color: #fff; padding: 12px; border-radius: 10px; font-size: 15px; cursor: pointer; }
+    .toast { font-size: 13px; color: #047857; }
+  </style>
+</head>
+<body>
+  <h1>NeuroNudge Rules</h1>
+  <p>Tune how the focus coach reacts to your habits. All settings stay on-device.</p>
+
+  <form id="rulesForm">
+    <div class="field">
+      <label for="breakInterval">Break reminder interval (minutes)</label>
+      <input type="number" id="breakInterval" min="5" step="5" required />
+    </div>
+
+    <div class="field">
+      <label for="driftSensitivity">Drift sensitivity</label>
+      <select id="driftSensitivity">
+        <option value="low">Low</option>
+        <option value="medium">Medium</option>
+        <option value="high">High</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="maxDaily">Max daily focus limit (hours)</label>
+      <input type="number" id="maxDaily" min="1" max="16" step="1" required />
+    </div>
+
+    <label class="checkbox">
+      <input type="checkbox" id="voiceNudges" />
+      <span>Enable voice nudges</span>
+    </label>
+
+    <button type="submit">Save Rules</button>
+    <div id="toast" class="toast"></div>
+  </form>
+
+  <script src="options.js"></script>
+</body>
+</html>

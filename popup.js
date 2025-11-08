@@ -1,72 +1,104 @@
 // popup.js
-// Lightweight dashboard for NeuroNudge: shows the latest state, summarizes
-// today’s focus vs idle time, captures mood + privacy preferences, and lets the
-// user request an immediate nudge.
+// Presents the Phase 4 dashboard: summarizes focus vs idle, top sites, mood &
+// privacy controls, and the most recent nudges while keeping everything local.
 
 const stateEl = document.getElementById("stateValue");
 const nudgeCountEl = document.getElementById("nudgeCount");
 const focusBarEl = document.getElementById("focusBar");
 const focusTimeEl = document.getElementById("focusTime");
 const idleTimeEl = document.getElementById("idleTime");
+const siteListEl = document.getElementById("siteList");
 const moodSelect = document.getElementById("mood");
 const privacyToggle = document.getElementById("privacyToggle");
 const nudgeListEl = document.getElementById("nudgeList");
 const saveMoodBtn = document.getElementById("saveMood");
 const pingBtn = document.getElementById("ping");
 
+const EIGHT_HOURS_SECONDS = 8 * 3600;
+const NUDGE_DISPLAY_LIMIT = 5;
+
 async function refresh() {
-  const [{ focusState = "steady", nudgeCount = 0, userMood = "neutral", privacyMode = false, nudgeHistory = [] }, { activitySummary }] =
-    await Promise.all([
-      chrome.storage.local.get(["focusState", "nudgeCount", "userMood", "privacyMode", "nudgeHistory"]),
-      chrome.storage.local.get("activitySummary")
-    ]);
+  const storage = await chrome.storage.local.get([
+    "focusState",
+    "currentState",
+    "userMood",
+    "privacyMode",
+    "nudgeLog",
+    "dailyTimeLog"
+  ]);
 
-  stateEl.textContent = focusState;
-  stateEl.dataset.state = focusState;
-  nudgeCountEl.textContent = `Total nudges: ${nudgeCount}`;
+  const todaySites = await getTodaySummary(storage.dailyTimeLog);
+  const focusSeconds = todaySites.reduce((sum, entry) => sum + entry.seconds, 0);
+  const idleSeconds = Math.max(0, EIGHT_HOURS_SECONDS - focusSeconds);
+  const progressTotal = focusSeconds + idleSeconds || 1;
+  const focusPct = Math.min(100, Math.round((focusSeconds / progressTotal) * 100));
 
-  moodSelect.value = userMood;
-  privacyToggle.checked = Boolean(privacyMode);
-
-  const summary = activitySummary || {};
-  const now = Date.now();
-  let focusMs = summary.totalFocusMs || 0;
-  let idleMs = summary.totalIdleMs || 0;
-  if (summary.lastState === "active" && summary.lastActiveAt) {
-    focusMs += Math.max(0, now - summary.lastActiveAt);
-  } else if (summary.lastState === "idle" && summary.lastIdleAt) {
-    idleMs += Math.max(0, now - summary.lastIdleAt);
-  }
-  const total = focusMs + idleMs || 1;
-  const focusPct = Math.min(100, Math.round((focusMs / total) * 100));
   focusBarEl.style.width = `${focusPct}%`;
-  focusTimeEl.textContent = `Focus: ${msToMinutes(focusMs)}m`;
-  idleTimeEl.textContent = `Idle: ${msToMinutes(idleMs)}m`;
+  focusTimeEl.textContent = `Focus: ${formatMinutes(focusSeconds)}`;
+  idleTimeEl.textContent = `Idle: ${formatMinutes(idleSeconds)}`;
 
-  renderNudges(nudgeHistory);
+  const topSites = todaySites.slice(0, 5);
+  if (topSites.length === 0) {
+    siteListEl.innerHTML = `<li><em class="muted">No data yet.</em></li>`;
+  } else {
+    siteListEl.innerHTML = topSites
+      .map((site) => `<li><span>${site.host}</span><strong>${Math.max(1, site.minutes)}m</strong></li>`)
+      .join("");
+  }
+
+  const state = storage.focusState || storage.currentState || "steady";
+  stateEl.textContent = state;
+
+  const nudgeLog = Array.isArray(storage.nudgeLog) ? storage.nudgeLog : [];
+  const todaysNudges = nudgeLog.filter((item) => item.day === todayKey());
+  nudgeCountEl.textContent = `Today: ${todaysNudges.length} nudges`;
+  renderNudges(nudgeLog);
+
+  moodSelect.value = storage.userMood || "neutral";
+  privacyToggle.checked = Boolean(storage.privacyMode);
 }
 
-function renderNudges(history) {
-  if (!history || history.length === 0) {
-    nudgeListEl.innerHTML = "<li>No nudges yet.</li>";
+function renderNudges(log) {
+  if (!log || log.length === 0) {
+    nudgeListEl.innerHTML = `<li class="muted">No nudges yet.</li>`;
     return;
   }
-  const recent = history.slice(0, 3);
-  nudgeListEl.innerHTML = recent
-    .map(
-      (entry) =>
-        `<li>${sanitize(entry.message)}<span>${formatTime(entry.at)} · ${entry.state}</span></li>`
-    )
+  const list = log.slice(0, NUDGE_DISPLAY_LIMIT);
+  nudgeListEl.innerHTML = list
+    .map((entry) => `<li>${sanitize(entry.message || "")}<span>${entry.time || formatClock(entry.at)} · ${entry.state || ""}</span></li>`)
     .join("");
 }
 
-function formatTime(timestamp) {
-  if (!timestamp) return "";
-  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+async function getTodaySummary(passedLog) {
+  const log =
+    passedLog ??
+    (await chrome.storage.local.get("dailyTimeLog")).dailyTimeLog ??
+    {};
+  const dayData = log?.[todayKey()] || {};
+  return Object.entries(dayData)
+    .map(([host, payload]) => {
+      const seconds = Math.max(0, Math.round(payload?.seconds || 0));
+      return {
+        host,
+        seconds,
+        minutes: Math.max(0, Math.round(seconds / 60))
+      };
+    })
+    .filter((entry) => entry.seconds > 0)
+    .sort((a, b) => b.seconds - a.seconds);
 }
 
-function msToMinutes(ms = 0) {
-  return Math.round(ms / 60000);
+function todayKey() {
+  return new Date().toISOString().split("T")[0];
+}
+
+function formatMinutes(seconds = 0) {
+  return `${Math.max(0, Math.round(seconds / 60))}m`;
+}
+
+function formatClock(timestamp) {
+  if (!timestamp) return "";
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function sanitize(str = "") {
@@ -76,8 +108,12 @@ function sanitize(str = "") {
 }
 
 saveMoodBtn.addEventListener("click", async () => {
-  await chrome.storage.local.set({ userMood: moodSelect.value });
-  await refresh();
+  const mood = moodSelect.value;
+  const { moodLog = [] } = await chrome.storage.local.get("moodLog");
+  const updated = [{ mood, at: Date.now() }, ...moodLog].slice(0, 50);
+  await chrome.storage.local.set({ userMood: mood, moodLog: updated });
+  saveMoodBtn.textContent = "Saved!";
+  setTimeout(() => (saveMoodBtn.textContent = "Save Mood"), 1500);
 });
 
 privacyToggle.addEventListener("change", async (event) => {

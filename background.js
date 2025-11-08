@@ -9,8 +9,16 @@ import { getAINudge } from "./aiNudge.js";
 const NUDGE_INTERVAL_MINUTES = 10;
 const IDLE_DETECTION_INTERVAL_SECONDS = 60;
 const TRACKING_ALARM = "neuro-time-engine";
+const RULES_REFRESH_ALARM = "neuro-rules-refresh";
 const MAX_TRACKING_DELTA_SECONDS = 120;
 const RETAIN_DAYS = 30;
+const RULES_REFRESH_MINUTES = 10;
+const DEFAULT_RULES = {
+  breakInterval: 45,
+  driftSensitivity: "medium",
+  maxDailyHours: 8,
+  voice: true
+};
 const STATE_MESSAGES = {
   drift: "Seems your focus drifted, ready to sprint?",
   overload: "You’ve worked hard — time for a short break.",
@@ -25,6 +33,7 @@ let lastFocusState = null;
 let lastTickTs = Date.now();
 let lastActiveTab = null;
 let lastTrackedHost = null;
+let rulesConfig = { ...DEFAULT_RULES };
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.notifications.create({
@@ -58,6 +67,7 @@ async function bootstrap() {
   await seedTimeLogStorage();
   await ensureTrackingAlarm();
   await hydrateTimeEngine();
+  await loadRules();
 
   const initialIdleState = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
   currentIdleState = normalizeIdleState(initialIdleState);
@@ -120,6 +130,10 @@ async function bootstrap() {
     periodInMinutes: NUDGE_INTERVAL_MINUTES,
     delayInMinutes: 1
   });
+  chrome.alarms.create(RULES_REFRESH_ALARM, {
+    periodInMinutes: RULES_REFRESH_MINUTES,
+    delayInMinutes: 0.5
+  });
 
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === "neuro-nudge-eval") {
@@ -127,6 +141,9 @@ async function bootstrap() {
     }
     if (alarm.name === TRACKING_ALARM) {
       handleTick("alarm").catch((error) => console.warn("Engine alarm tick failed", error));
+    }
+    if (alarm.name === RULES_REFRESH_ALARM) {
+      loadRules().catch((error) => console.warn("Rules refresh failed", error));
     }
   });
 
@@ -228,6 +245,11 @@ async function hydrateTimeEngine() {
     await chrome.storage.local.set({ lastTickTs });
   }
   await refreshActiveTab();
+}
+
+async function loadRules() {
+  const { rules } = await chrome.storage.local.get("rules");
+  rulesConfig = { ...DEFAULT_RULES, ...(rules || {}) };
 }
 
 async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = true, forceLog = false } = {}) {
@@ -355,21 +377,22 @@ function todayKey() {
 }
 
 async function evaluateStateAndNudge(triggerSource = "schedule", { force = false } = {}) {
-  const state = await getCurrentState();
+  const state = await getCurrentState(rulesConfig);
   const hasChanged = state !== lastFocusState;
   const shouldNudge = force || hasChanged;
   if (!shouldNudge) return state;
   await deliverNudge(state, triggerSource);
   lastFocusState = state;
-  await chrome.storage.local.set({ focusState: state });
+  await chrome.storage.local.set({ focusState: state, currentState: state });
   return state;
 }
 
 async function deliverNudge(state, triggerSource) {
-  const { userMood = "neutral", nudgeCount = 0, nudgeHistory = [] } = await chrome.storage.local.get([
+  const { userMood = "neutral", nudgeCount = 0, nudgeHistory = [], nudgeLog = [] } = await chrome.storage.local.get([
     "userMood",
     "nudgeCount",
-    "nudgeHistory"
+    "nudgeHistory",
+    "nudgeLog"
   ]);
 
   const aiResult = await getAINudge(state, userMood).catch((error) => {
@@ -388,14 +411,26 @@ async function deliverNudge(state, triggerSource) {
     priority: 0
   });
 
-  speakMessage(message);
+  if (rulesConfig.voice) {
+    speakMessage(message);
+  }
 
-  const updatedHistory = [{ message, state, mood: userMood, at: Date.now(), source: aiResult?.source || "local", trigger: triggerSource }, ...nudgeHistory].slice(0, 10);
+  const timestamp = Date.now();
+  const updatedHistory = [{ message, state, mood: userMood, at: timestamp, source: aiResult?.source || "local", trigger: triggerSource }, ...nudgeHistory].slice(0, 10);
+  const newLogEntry = {
+    message,
+    state,
+    time: formatClock(timestamp),
+    day: todayKey(),
+    at: timestamp
+  };
+  const updatedLog = [newLogEntry, ...nudgeLog].slice(0, 20);
   await chrome.storage.local.set({
     nudgeCount: nudgeCount + 1,
     nudgeHistory: updatedHistory,
+    nudgeLog: updatedLog,
     lastNudgeMessage: message,
-    lastNudgeAt: Date.now()
+    lastNudgeAt: timestamp
   });
 }
 
@@ -407,6 +442,10 @@ function speakMessage(message) {
     rate: 1,
     voiceName: undefined
   });
+}
+
+function formatClock(timestamp) {
+  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 async function updateSummary(mutator) {
