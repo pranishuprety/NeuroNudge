@@ -2,6 +2,8 @@
 // Loads and saves NeuroNudge rule preferences so the background worker can
 // tailor state detection and nudging cadence.
 
+// commet from Pranish to check
+
 const form = document.getElementById("rulesForm");
 const breakInput = document.getElementById("breakInterval");
 const driftSelect = document.getElementById("driftSensitivity");
