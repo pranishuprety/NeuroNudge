@@ -13,6 +13,7 @@ const privacyToggle = document.getElementById("privacyToggle");
 const nudgeListEl = document.getElementById("nudgeList");
 const saveMoodBtn = document.getElementById("saveMood");
 const pingBtn = document.getElementById("ping");
+const settingsBtn = document.getElementById("settingsBtn");
 
 const EIGHT_HOURS_SECONDS = 8 * 3600;
 const NUDGE_DISPLAY_LIMIT = 5;
@@ -132,6 +133,10 @@ pingBtn.addEventListener("click", async () => {
     pingBtn.textContent = "Give me a nudge now";
     refresh();
   }
+});
+
+settingsBtn.addEventListener("click", () => {
+  chrome.runtime.openOptionsPage();
 });
 
 refresh();
