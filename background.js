@@ -371,6 +371,12 @@ async function handleKpmBatch(message, sender) {
   const add = Math.max(0, Math.min(KPM_MAX_BATCH, Number(message.count) || 0));
   if (add <= 0) return;
   kpmMinuteBucket = Math.min(kpmMinuteBucket + add, KPM_MAX_BATCH);
+  console.log(`[KPM] batch +${add} keys`, {
+    tab: sender.tab?.url,
+    origin: message.origin,
+    minuteTs: kpmMinuteTs,
+    pending: kpmMinuteBucket
+  });
   await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
 }
 
