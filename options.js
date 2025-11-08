@@ -1,6 +1,8 @@
 // options.js
 // Loads and saves NeuroNudge rule preferences so the background worker can
 // tailor state detection and nudging cadence.
+// comment from Rahul to check
+
 
 const form = document.getElementById("rulesForm");
 const breakInput = document.getElementById("breakInterval");
