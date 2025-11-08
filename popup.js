@@ -135,9 +135,23 @@ pingBtn.addEventListener("click", async () => {
   }
 });
 
-settingsBtn.addEventListener("click", () => {
-  chrome.runtime.openOptionsPage();
-});
+function openOptionsPanel() {
+  const fallback = () => chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+  if (typeof chrome.runtime.openOptionsPage !== "function") {
+    fallback();
+    return;
+  }
+  const maybePromise = chrome.runtime.openOptionsPage(() => {
+    if (chrome.runtime.lastError) fallback();
+  });
+  if (maybePromise && typeof maybePromise.catch === "function") {
+    maybePromise.catch(fallback);
+  }
+}
+
+if (settingsBtn) {
+  settingsBtn.addEventListener("click", openOptionsPanel);
+}
 
 refresh();
 setInterval(refresh, 15000);
