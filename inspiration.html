@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>NeuroNudge Momentum Board</title>
+  <style>
+    :root {
+      font-family: "Inter", system-ui, sans-serif;
+      color-scheme: dark;
+      --bg-gentle: radial-gradient(140% 120% at 0% 0%, rgba(59, 130, 246, 0.18), transparent 55%), #030918;
+      --bg-push: radial-gradient(140% 120% at 0% 0%, rgba(249, 115, 22, 0.22), transparent 55%), #0a0b12;
+      --bg-interrupt: radial-gradient(140% 120% at 0% 0%, rgba(239, 68, 68, 0.24), transparent 55%), #05060c;
+      --panel: rgba(10, 20, 42, 0.76);
+      --panel-border: rgba(148, 163, 184, 0.18);
+      --text-primary: #f8fbff;
+      --text-secondary: #94a3b8;
+      --accent-gentle: #38bdf8;
+      --accent-push: #f97316;
+      --accent-interrupt: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg-gentle);
+      color: var(--text-primary);
+      display: flex;
+      justify-content: center;
+      align-items: stretch;
+      padding: 48px 20px 56px;
+    }
+
+    body[data-mode="push"] {
+      background: var(--bg-push);
+    }
+
+    body[data-mode="interrupt"] {
+      background: var(--bg-interrupt);
+    }
+
+    .wrap {
+      width: min(720px, 100%);
+      background: linear-gradient(145deg, rgba(10, 20, 42, 0.88), rgba(8, 15, 32, 0.74));
+      border: 1px solid var(--panel-border);
+      border-radius: 28px;
+      padding: 32px 32px 28px;
+      display: grid;
+      gap: 26px;
+      box-shadow: 0 28px 64px rgba(2, 6, 23, 0.65);
+    }
+
+    header {
+      display: grid;
+      gap: 14px;
+    }
+
+    .mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      color: var(--accent-gentle);
+      background: rgba(56, 189, 248, 0.12);
+    }
+
+    body[data-mode="push"] .mode-badge {
+      color: var(--accent-push);
+      background: rgba(249, 115, 22, 0.12);
+    }
+
+    body[data-mode="interrupt"] .mode-badge {
+      color: var(--accent-interrupt);
+      background: rgba(239, 68, 68, 0.12);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    header p {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 15px;
+      line-height: 1.6;
+      max-width: 560px;
+    }
+
+    .progress {
+      display: grid;
+      gap: 12px;
+    }
+
+    .progress-track {
+      width: 100%;
+      height: 14px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.16);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(56, 189, 248, 0.92), rgba(14, 165, 233, 0.92));
+      transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .progress-fill[data-mode="push"] {
+      background: linear-gradient(90deg, rgba(249, 115, 22, 0.92), rgba(245, 158, 11, 0.92));
+    }
+
+    .progress-fill[data-mode="interrupt"] {
+      background: linear-gradient(90deg, rgba(239, 68, 68, 0.92), rgba(220, 38, 38, 0.92));
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+
+    .progress-meta strong {
+      font-size: 16px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .stat {
+      background: rgba(12, 24, 52, 0.55);
+      border-radius: 18px;
+      padding: 16px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      display: grid;
+      gap: 6px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-secondary);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .flow-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+      color: var(--text-secondary);
+    }
+
+    .flow-pill[data-state="met"] {
+      color: #34d399;
+      border-color: rgba(34, 197, 94, 0.32);
+    }
+
+    .list-block {
+      background: rgba(11, 22, 46, 0.55);
+      border-radius: 20px;
+      padding: 20px 22px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      display: grid;
+      gap: 12px;
+    }
+
+    .list-block h2 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+
+    .list-block ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .list-block li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(7, 16, 34, 0.65);
+      border-radius: 14px;
+      padding: 10px 12px;
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      font-size: 13px;
+    }
+
+    .muted {
+      color: var(--text-secondary);
+      font-size: 13px;
+    }
+
+    footer {
+      display: flex;
+      gap: 14px;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    button {
+      border: none;
+      border-radius: 18px;
+      padding: 12px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      letter-spacing: 0.04em;
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, rgba(34, 211, 238, 0.9), rgba(59, 130, 246, 0.9));
+      color: #041421;
+      box-shadow: 0 16px 32px rgba(34, 211, 238, 0.32);
+    }
+
+    body[data-mode="push"] button.primary {
+      background: linear-gradient(135deg, rgba(249, 115, 22, 0.95), rgba(245, 158, 11, 0.95));
+      color: #220a04;
+      box-shadow: 0 18px 32px rgba(245, 158, 11, 0.35);
+    }
+
+    body[data-mode="interrupt"] button.primary {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.95), rgba(220, 38, 38, 0.95));
+      color: #240404;
+      box-shadow: 0 18px 36px rgba(248, 113, 113, 0.4);
+    }
+
+    button.primary:hover,
+    button.primary:focus-visible {
+      transform: translateY(-1px);
+    }
+
+    button.ghost {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text-primary);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    button.ghost:hover,
+    button.ghost:focus-visible {
+      transform: translateY(-1px);
+      box-shadow: 0 12px 22px rgba(15, 23, 42, 0.4);
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 32px 12px 40px;
+      }
+
+      .wrap {
+        padding: 26px 20px 24px;
+      }
+
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      footer {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      button {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body data-mode="gentle">
+  <div class="wrap">
+    <header>
+      <span id="modeBadge" class="mode-badge">Gentle Nudge</span>
+      <h1 id="modeTitle">Ease back into flow</h1>
+      <p id="modeMessage">A short reset and a focused tab is all you need to swing the trend back in your favor.</p>
+    </header>
+
+    <section class="progress">
+      <div class="progress-track">
+        <div id="progressFill" class="progress-fill" data-mode="gentle"></div>
+      </div>
+      <div class="progress-meta">
+        <strong id="progressPrimary">0% complete</strong>
+        <span id="progressSecondary">Target 0m</span>
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="stat">
+        <div class="stat-label">Time left</div>
+        <div id="remainingStat" class="stat-value">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Distraction cap</div>
+        <div id="distractStat" class="stat-value">—</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">5m pace</div>
+        <div id="kpmStat" class="stat-value">0 kpm</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Streak</div>
+        <div id="streakStat" class="stat-value">0 days</div>
+      </div>
+    </section>
+
+    <div id="flowStatus" class="flow-pill">Flow windows: 0</div>
+
+    <section class="list-block">
+      <h2>Trigger Points</h2>
+      <ul id="distractingList">
+        <li class="muted">No distractions logged yet.</li>
+      </ul>
+    </section>
+
+    <section class="list-block">
+      <h2>Momentum Tip</h2>
+      <p id="coachingTip" class="muted">Pick one task, set a 5-minute timer, and start typing — the first keystroke breaks the spell.</p>
+    </section>
+
+    <footer>
+      <button id="resumeBtn" class="primary" type="button">Back to work</button>
+      <button id="openOptions" class="ghost" type="button">Adjust goals</button>
+    </footer>
+  </div>
+
+  <script src="inspiration.js"></script>
+</body>
+</html>

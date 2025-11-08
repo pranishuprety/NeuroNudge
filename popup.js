@@ -22,6 +22,20 @@ const menuToggleBtn = document.getElementById("menuToggle");
 const menuCloseBtn = document.getElementById("menuClose");
 const sidePanelEl = document.getElementById("sidePanel");
 const panelBackdropEl = document.getElementById("panelBackdrop");
+const insightToggleBtn = document.getElementById("insightToggle");
+const mainViewEl = document.getElementById("mainView");
+const insightViewEl = document.getElementById("insightView");
+const goalStatusBadgeEl = document.getElementById("goalStatusBadge");
+const goalProgressFillEl = document.getElementById("goalProgressFill");
+const goalProgressLabelEl = document.getElementById("goalProgressLabel");
+const goalDistractLabelEl = document.getElementById("goalDistractLabel");
+const goalFlowLabelEl = document.getElementById("goalFlowLabel");
+const goalCardEl = document.getElementById("goalCard");
+const streakValueEl = document.getElementById("streakValue");
+const scoreProductiveEl = document.getElementById("scoreProductive");
+const scoreDistractingEl = document.getElementById("scoreDistracting");
+const scoreFlowEl = document.getElementById("scoreFlow");
+const scoreHistoryEl = document.getElementById("scoreHistory");
 
 function setPanelOpen(isOpen) {
   if (!sidePanelEl || !panelBackdropEl) return;
@@ -39,6 +53,22 @@ function setPanelOpen(isOpen) {
   }
 }
 
+const INSIGHT_LABEL = "⚡ Pulse";
+const MAIN_LABEL = "← Focus";
+
+function setInsightOpen(isOpen) {
+  if (!mainViewEl || !insightViewEl || !insightToggleBtn) return;
+  mainViewEl.classList.toggle("hidden", isOpen);
+  insightViewEl.classList.toggle("hidden", !isOpen);
+  insightToggleBtn.setAttribute("aria-pressed", isOpen ? "true" : "false");
+  if (isOpen) {
+    insightToggleBtn.textContent = MAIN_LABEL;
+  } else {
+    insightToggleBtn.textContent = INSIGHT_LABEL;
+  }
+  insightToggleBtn.focus({ preventScroll: true });
+}
+
 if (menuToggleBtn) {
   menuToggleBtn.addEventListener("click", () => setPanelOpen(true));
 }
@@ -52,8 +82,23 @@ if (panelBackdropEl) {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") setPanelOpen(false);
+  if (event.key === "Escape") {
+    if (!insightViewEl?.classList?.contains("hidden")) {
+      setInsightOpen(false);
+    } else {
+      setPanelOpen(false);
+    }
+  }
 });
+
+insightToggleBtn?.addEventListener("click", () => {
+  const currentlyOpen = !insightViewEl?.classList?.contains("hidden");
+  setInsightOpen(!currentlyOpen);
+});
+if (insightToggleBtn && !insightToggleBtn.hasAttribute("aria-pressed")) {
+  insightToggleBtn.setAttribute("aria-pressed", "false");
+  insightToggleBtn.textContent = INSIGHT_LABEL;
+}
 
 const EIGHT_HOURS_SECONDS = 8 * 3600;
 const NUDGE_DISPLAY_LIMIT = 5;
@@ -61,6 +106,18 @@ const CATEGORY_SYMBOLS = {
   Productive: "✅",
   Distracting: "⚠️",
   Neutral: "•"
+};
+const DEFAULT_GOALS = {
+  daily: {
+    productiveSecTarget: 3 * 3600,
+    distractingSecCap: 45 * 60,
+    flowWindowsTarget: 2
+  }
+};
+const GOAL_STATE_LABELS = {
+  PASSING: "Passing",
+  AT_RISK: "At risk",
+  FAILING: "Failing"
 };
 
 async function refresh() {
@@ -75,8 +132,11 @@ async function refresh() {
     "kpmLog",
     "kpmLive",
     "flowLog",
-    "categorizationRules"
+    "categorizationRules",
+    "goalStatus",
+    "scoreboard"
   ]);
+  const goalsConfig = await loadGoals();
 
   const today = todayKey();
   const sum = storage.dailySummary?.[today];
@@ -178,8 +238,97 @@ async function refresh() {
   if (kpmTotalEl) kpmTotalEl.textContent = kpmSnapshot.total.toString();
   if (kpmStatusEl) kpmStatusEl.textContent = kpmSnapshot.status;
 
+  renderGoals(storage.goalStatus, goalsConfig, storage.scoreboard);
+  renderScoreboard(storage.scoreboard);
+
   moodSelect.value = storage.userMood || "neutral";
   privacyToggle.checked = Boolean(storage.privacyMode);
+}
+
+function renderGoals(goalStatus, goalsConfig, scoreboard) {
+  if (!goalProgressFillEl || !goalProgressLabelEl || !goalStatusBadgeEl) return;
+  const goals = goalsConfig?.daily || DEFAULT_GOALS.daily;
+  const stateKey = goalStatus?.state && GOAL_STATE_LABELS[goalStatus.state] ? goalStatus.state : "PASSING";
+  const stateClass = goalStateToClass(stateKey);
+  const pct = goalStatus?.pctProductive
+    ? Math.round(Math.min(1, Math.max(0, goalStatus.pctProductive)) * 100)
+    : 0;
+  const targetSec = Math.max(0, Number(goals.productiveSecTarget) || 0);
+  const remainingSec =
+    targetSec > 0 ? Math.max(0, goalStatus?.productiveRemainingSec ?? targetSec) : 0;
+  const todayStats = scoreboard?.today || {};
+  const distractingUsedSec = Math.max(0, Math.round(todayStats.distractingSec || 0));
+  const capSec = Math.max(0, Number(goals.distractingSecCap) || 0);
+  const flowTarget = Math.max(0, Number(goals.flowWindowsTarget) || 0);
+  const flowDone = goalStatus?.flowDone ?? todayStats.flowCount ?? 0;
+
+  goalProgressFillEl.style.width = targetSec > 0 ? `${pct}%` : "0%";
+  goalProgressFillEl.dataset.state = stateClass;
+  if (goalCardEl) goalCardEl.dataset.state = stateClass;
+
+  goalProgressLabelEl.textContent =
+    targetSec > 0
+      ? `${pct}% · ${remainingSec > 0 ? `${Math.ceil(remainingSec / 60)}m left` : "Target met"}`
+      : "No target set";
+
+  goalStatusBadgeEl.textContent = GOAL_STATE_LABELS[stateKey] || "Passing";
+  goalStatusBadgeEl.dataset.state = stateClass;
+
+  if (goalDistractLabelEl) {
+    const overage = Math.max(0, Math.round((goalStatus?.distractingOverSec || 0) / 60));
+    goalDistractLabelEl.classList.toggle("goal-alert", overage > 0);
+    if (overage > 0) {
+      goalDistractLabelEl.textContent = `+${overage}m over cap`;
+    } else if (capSec > 0) {
+      goalDistractLabelEl.textContent = `${formatMinutes(distractingUsedSec)} of ${formatMinutes(capSec)} distracting`;
+    } else {
+      goalDistractLabelEl.textContent = "No distracting cap set";
+    }
+  }
+
+  if (goalFlowLabelEl) {
+    if (flowTarget > 0) {
+      goalFlowLabelEl.textContent = `Flow windows: ${flowDone}/${flowTarget}`;
+    } else {
+      goalFlowLabelEl.textContent = `Flow windows: ${flowDone}`;
+    }
+  }
+}
+
+function renderScoreboard(scoreboard) {
+  if (!streakValueEl || !scoreProductiveEl || !scoreDistractingEl || !scoreHistoryEl) return;
+  if (!scoreboard) {
+    streakValueEl.textContent = "Streak: 0 days";
+    scoreProductiveEl.textContent = "0m";
+    scoreDistractingEl.textContent = "0m";
+    if (scoreFlowEl) scoreFlowEl.textContent = "0";
+    scoreHistoryEl.innerHTML = `<li class="muted">No prior days yet.</li>`;
+    return;
+  }
+
+  const today = scoreboard.today || {};
+  const streak = scoreboard.streaks?.daysMetTarget || 0;
+  streakValueEl.textContent = `Streak: ${streak} day${streak === 1 ? "" : "s"}`;
+  scoreProductiveEl.textContent = formatMinutes(today.productiveSec || 0);
+  scoreDistractingEl.textContent = formatMinutes(today.distractingSec || 0);
+  if (scoreFlowEl) scoreFlowEl.textContent = String(today.flowCount ?? 0);
+
+  const history = Array.isArray(scoreboard.history7d) ? scoreboard.history7d : [];
+  if (history.length === 0) {
+    scoreHistoryEl.innerHTML = `<li class="muted">No prior days yet.</li>`;
+  } else {
+    const items = history
+      .slice(0, 5)
+      .map((entry) => {
+        const label = sanitize(formatHistoryDay(entry.day));
+        const statusIcon = entry.met ? "✓" : "•";
+        return `<li data-met="${entry.met ? "true" : "false"}"><span>${label}</span><span>${statusIcon} ${formatMinutes(
+          entry.productiveSec || 0
+        )}</span></li>`;
+      })
+      .join("");
+    scoreHistoryEl.innerHTML = items;
+  }
 }
 
 function renderNudges(log, flows = []) {
@@ -265,6 +414,51 @@ function formatMinutes(seconds = 0) {
 function formatClock(timestamp) {
   if (!timestamp) return "";
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function goalStateToClass(state = "PASSING") {
+  return (state || "PASSING").toLowerCase().replace(/_/g, "-");
+}
+
+function formatHistoryDay(day) {
+  if (!day) return "";
+  const parsed = new Date(`${day}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return day;
+  return parsed.toLocaleDateString([], { weekday: "short" });
+}
+
+async function loadGoals() {
+  try {
+    if (chrome?.storage?.sync) {
+      const { goals } = await chrome.storage.sync.get("goals");
+      return normalizeGoals(goals);
+    }
+  } catch (error) {
+    console.warn("Failed to load goals from sync", error);
+  }
+  const { goals } = await chrome.storage.local.get("goals");
+  return normalizeGoals(goals);
+}
+
+function normalizeGoals(raw) {
+  const input = raw && typeof raw === "object" ? raw : {};
+  const merged = {
+    daily: {
+      ...DEFAULT_GOALS.daily,
+      ...(input.daily || {})
+    }
+  };
+  const daily = merged.daily;
+  daily.productiveSecTarget = Number.isFinite(daily.productiveSecTarget)
+    ? Math.max(0, Number(daily.productiveSecTarget))
+    : DEFAULT_GOALS.daily.productiveSecTarget;
+  daily.distractingSecCap = Number.isFinite(daily.distractingSecCap)
+    ? Math.max(0, Number(daily.distractingSecCap))
+    : DEFAULT_GOALS.daily.distractingSecCap;
+  daily.flowWindowsTarget = Number.isFinite(daily.flowWindowsTarget)
+    ? Math.max(0, Number(daily.flowWindowsTarget))
+    : DEFAULT_GOALS.daily.flowWindowsTarget;
+  return { daily };
 }
 
 function sanitize(str = "") {

@@ -16,6 +16,18 @@ const RULES_REFRESH_MINUTES = 10;
 const KPM_MINUTE_MS = 60 * 1000;
 const KPM_MAX_BATCH = 1200;
 const SUMMARY_PRUNE_DAYS = 30;
+const DEFAULT_GOALS = {
+  daily: {
+    productiveSecTarget: 3 * 3600,
+    distractingSecCap: 45 * 60,
+    flowWindowsTarget: 2
+  }
+};
+const GOAL_STATUS_STATES = {
+  PASSING: "PASSING",
+  AT_RISK: "AT_RISK",
+  FAILING: "FAILING"
+};
 let ruleCache = { exact: new Map(), regex: [] };
 
 
@@ -111,6 +123,10 @@ async function bootstrap() {
     }
   });
 
+  chrome.tabs.onCreated.addListener((tab) => {
+    handleNewTab(tab).catch((error) => console.warn("Adaptive tab error", error));
+  });
+
   chrome.windows.onFocusChanged.addListener((windowId) => {
     if (windowId === chrome.windows.WINDOW_ID_NONE) return;
     refreshActiveTab().catch((error) => console.warn("Window focus error", error));
@@ -192,6 +208,12 @@ async function bootstrap() {
   });
 
   await refreshActiveTab();
+  try {
+    const { dailySummary = {} } = await chrome.storage.local.get("dailySummary");
+    await syncGoalEngine(dailySummary[todayKey()]);
+  } catch (error) {
+    console.warn("Initial goal sync failed", error);
+  }
 }
 
 function normalizeIdleState(state) {
@@ -420,6 +442,11 @@ async function updateDailySummary() {
     computedAt: Date.now()
   };
   await chrome.storage.local.set({ dailySummary });
+  try {
+    await syncGoalEngine(dailySummary[today]);
+  } catch (error) {
+    console.warn("Goal engine sync failed", error);
+  }
 }
 
 async function maybeRunBreakCoach() {
@@ -790,6 +817,233 @@ function speakMessage(message) {
 
 function formatClock(timestamp) {
   return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+async function syncGoalEngine(summary) {
+  const day = todayKey();
+  const goalStatus = await computeGoalStatus(summary, { day });
+  await updateScoreboard(summary, goalStatus, day);
+}
+
+async function computeGoalStatus(summary, { day = todayKey(), skipPersist = false, flowLog: flowLogOverride } = {}) {
+  const safeSummary = summary || {};
+  const classes = safeSummary.classes || {};
+  const productiveSec = Math.max(0, Math.round(classes.Productive || 0));
+  const distractingSec = Math.max(0, Math.round(classes.Distracting || 0));
+
+  const goals = await getGoals();
+  const dailyGoals = goals.daily || {};
+  const productiveTarget = Number(dailyGoals.productiveSecTarget) || 0;
+  const distractingCap = Number(dailyGoals.distractingSecCap) || 0;
+  const flowTarget = Number(dailyGoals.flowWindowsTarget) || 0;
+
+  const flowLogSource = Array.isArray(flowLogOverride) ? flowLogOverride : (await chrome.storage.local.get("flowLog")).flowLog;
+  const normalizedFlowLog = Array.isArray(flowLogSource) ? flowLogSource : [];
+  const flowDone = countFlowsForDay(normalizedFlowLog, day);
+
+  const pctProductive = productiveTarget > 0 ? Math.min(1, productiveSec / productiveTarget) : 1;
+  const productiveRemainingSec = productiveTarget > 0 ? Math.max(0, productiveTarget - productiveSec) : 0;
+  const distractingOverSec = distractingCap > 0 ? Math.max(0, distractingSec - distractingCap) : 0;
+
+  let state = resolveGoalState({
+    productiveTarget,
+    distractingCap,
+    pctProductive,
+    productiveRemainingSec,
+    distractingSec,
+    day
+  });
+
+  if (state !== GOAL_STATUS_STATES.PASSING && flowTarget > 0 && flowDone >= flowTarget && pctProductive >= 0.75) {
+    state = GOAL_STATUS_STATES.AT_RISK;
+  }
+
+  const goalStatus = {
+    state,
+    pctProductive,
+    productiveRemainingSec,
+    distractingOverSec,
+    flowDone,
+    updatedAt: Date.now()
+  };
+
+  if (!skipPersist) {
+    await chrome.storage.local.set({ goalStatus });
+  }
+
+  return goalStatus;
+}
+
+function resolveGoalState({ productiveTarget, distractingCap, pctProductive, productiveRemainingSec, distractingSec, day }) {
+  let state = GOAL_STATUS_STATES.PASSING;
+  if (productiveTarget > 0) {
+    if (pctProductive >= 1) {
+      state = GOAL_STATUS_STATES.PASSING;
+    } else {
+      const dayStart = new Date(`${day}T00:00:00`).getTime();
+      const hoursIntoDay = Math.max(0, (Date.now() - dayStart) / (60 * 60 * 1000));
+      const expectedPct = Math.min(1, Math.max(0, (hoursIntoDay - 1) / 9));
+      if (expectedPct <= 0.05) {
+        state = GOAL_STATUS_STATES.AT_RISK;
+      } else if (pctProductive >= expectedPct * 0.8) {
+        state = GOAL_STATUS_STATES.AT_RISK;
+      } else {
+        state = GOAL_STATUS_STATES.FAILING;
+      }
+    }
+  }
+
+  if (distractingCap > 0) {
+    const usageRatio = distractingSec / distractingCap;
+    if (usageRatio >= 1) {
+      state = GOAL_STATUS_STATES.FAILING;
+    } else if (usageRatio >= 0.8 && state === GOAL_STATUS_STATES.PASSING) {
+      state = GOAL_STATUS_STATES.AT_RISK;
+    }
+  }
+
+  if (productiveTarget > 0 && productiveRemainingSec <= productiveTarget * 0.1 && state === GOAL_STATUS_STATES.FAILING) {
+    return GOAL_STATUS_STATES.AT_RISK;
+  }
+
+  return state;
+}
+
+async function updateScoreboard(summary, goalStatus, day) {
+  const storage = await chrome.storage.local.get(["scoreboard", "scoreboardMeta", "dailySummary", "flowLog"]);
+  const storedScoreboard = storage.scoreboard || null;
+  const meta = storage.scoreboardMeta || {};
+  const dailySummary = storage.dailySummary || {};
+  const flowLog = Array.isArray(storage.flowLog) ? storage.flowLog : [];
+
+  const productiveSec = Math.max(0, Math.round(summary?.classes?.Productive || 0));
+  const distractingSec = Math.max(0, Math.round(summary?.classes?.Distracting || 0));
+  const flowCount = countFlowsForDay(flowLog, day);
+
+  const history7d = Array.isArray(storedScoreboard?.history7d) ? [...storedScoreboard.history7d] : [];
+  let streakCount = storedScoreboard?.streaks?.daysMetTarget || 0;
+  let lastEvaluatedDay = meta.lastEvaluatedDay || null;
+  const prevDay = meta.day;
+
+  if (prevDay && prevDay !== day && lastEvaluatedDay !== prevDay) {
+    const prevSummary = dailySummary[prevDay];
+    if (prevSummary) {
+      const prevStatus = await computeGoalStatus(prevSummary, {
+        day: prevDay,
+        skipPersist: true,
+        flowLog
+      });
+      const met = prevStatus.state === GOAL_STATUS_STATES.PASSING;
+      if (!history7d.some((entry) => entry?.day === prevDay)) {
+        history7d.unshift({
+          day: prevDay,
+          productiveSec: Math.max(0, Math.round(prevSummary?.classes?.Productive || 0)),
+          met
+        });
+        if (history7d.length > 7) history7d.length = 7;
+      }
+      streakCount = met ? streakCount + 1 : 0;
+    }
+    lastEvaluatedDay = prevDay;
+  }
+
+  const todayMet = goalStatus?.state === GOAL_STATUS_STATES.PASSING;
+
+  const scoreboardPayload = {
+    today: { productiveSec, distractingSec, flowCount, met: todayMet },
+    streaks: { daysMetTarget: streakCount },
+    history7d
+  };
+
+  const metaPayload = {
+    day,
+    lastEvaluatedDay
+  };
+
+  await chrome.storage.local.set({ scoreboard: scoreboardPayload, scoreboardMeta: metaPayload });
+}
+
+function countFlowsForDay(flowLog, day) {
+  if (!Array.isArray(flowLog)) return 0;
+  return flowLog.reduce((count, entry) => {
+    if (!entry || entry.type !== "end") return count;
+    const entryDay = new Date(entry.at).toISOString().split("T")[0];
+    return entryDay === day ? count + 1 : count;
+  }, 0);
+}
+
+async function getGoals() {
+  try {
+    if (!chrome?.storage?.sync) {
+      return { daily: { ...DEFAULT_GOALS.daily } };
+    }
+    const { goals } = await chrome.storage.sync.get("goals");
+    const input = goals && typeof goals === "object" ? goals : {};
+    const daily = {
+      ...DEFAULT_GOALS.daily,
+      ...(input.daily || {})
+    };
+    return { daily };
+  } catch (error) {
+    console.warn("Goals fetch failed", error);
+    return { daily: { ...DEFAULT_GOALS.daily } };
+  }
+}
+
+function pickInterventionMode(goalStatus, summary) {
+  if (!goalStatus) return null;
+  const state = goalStatus.state;
+  if (state === GOAL_STATUS_STATES.PASSING) return null;
+  const remaining = goalStatus.productiveRemainingSec || 0;
+  const minuteAvg5 = summary?.kpm?.minuteAvg5 || 0;
+  const distractingSec = Math.max(0, Math.round(summary?.classes?.Distracting || 0));
+  const productiveSec = Math.max(0, Math.round(summary?.classes?.Productive || 0));
+
+  if (state === GOAL_STATUS_STATES.FAILING) {
+    if (remaining > 0 && remaining <= 15 * 60) return "push";
+    if (distractingSec > productiveSec * 0.8 || minuteAvg5 < 20) return "interrupt";
+    return "interrupt";
+  }
+
+  if (state === GOAL_STATUS_STATES.AT_RISK) {
+    if (remaining > 0 && remaining <= 30 * 60) return "push";
+    if (minuteAvg5 < 30) return "gentle";
+    return "gentle";
+  }
+
+  return null;
+}
+
+async function handleNewTab(tab) {
+  const newTabUrl = tab?.pendingUrl || tab?.url || "";
+  if (!newTabUrl) return;
+  if (!newTabUrl.startsWith("chrome://newtab")) return;
+  if (tab?.url && tab.url.startsWith("chrome-extension://")) return;
+
+  try {
+    const storage = await chrome.storage.local.get(["goalStatus", "dailySummary"]);
+    const today = todayKey();
+    const summary = storage.dailySummary?.[today] || null;
+    if (!summary) return;
+    let status = storage.goalStatus || null;
+
+    const stale = !status || typeof status.updatedAt !== "number" || Date.now() - status.updatedAt > 2 * 60 * 1000;
+    if (stale) {
+      status = await computeGoalStatus(summary);
+    }
+
+    if (!status || status.state === GOAL_STATUS_STATES.PASSING) return;
+
+    const mode = pickInterventionMode(status, summary);
+    if (!mode) return;
+
+    const destination = `${chrome.runtime.getURL("inspiration.html")}?mode=${encodeURIComponent(mode)}`;
+    if (typeof tab.id === "number") {
+      await chrome.tabs.update(tab.id, { url: destination });
+    }
+  } catch (error) {
+    console.warn("Adaptive new tab failed", error);
+  }
 }
 
 async function updateSummary(mutator) {

@@ -140,9 +140,34 @@
       text-transform: uppercase;
     }
 
+    .view-toggle {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 0;
+      background: linear-gradient(135deg, rgba(45, 212, 191, 0.9), rgba(14, 165, 233, 0.9));
+      color: #041421;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .view-toggle:focus-visible,
+    .view-toggle:hover {
+      outline: none;
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(56, 189, 248, 0.35);
+    }
+
     .dashboard {
       display: grid;
       gap: 12px;
+    }
+
+    .dashboard.hidden {
+      display: none;
     }
 
     .card {
@@ -151,6 +176,141 @@
       padding: 16px;
       border: 1px solid var(--border);
       box-shadow: var(--shadow);
+    }
+
+    .goal-progress {
+      display: grid;
+      gap: 10px;
+    }
+
+    .goal-progress-track {
+      width: 100%;
+      height: 12px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.16);
+      overflow: hidden;
+    }
+
+    .goal-progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, rgba(34, 197, 94, 0.9), rgba(16, 185, 129, 0.9));
+      transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .goal-progress-fill[data-state="at-risk"] {
+      background: linear-gradient(90deg, rgba(249, 115, 22, 0.88), rgba(245, 158, 11, 0.88));
+    }
+
+    .goal-progress-fill[data-state="failing"] {
+      background: linear-gradient(90deg, rgba(248, 113, 113, 0.92), rgba(220, 38, 38, 0.92));
+    }
+
+    .goal-progress-label {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .goal-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      color: var(--text-secondary);
+      letter-spacing: 0.02em;
+    }
+
+    .goal-meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .goal-meta .goal-alert {
+      color: #f97316;
+    }
+
+    .chip.goal-chip {
+      background: rgba(34, 197, 94, 0.18);
+      color: #34d399;
+    }
+
+    .chip.goal-chip[data-state="at-risk"] {
+      background: rgba(249, 115, 22, 0.18);
+      color: #f97316;
+    }
+
+    .chip.goal-chip[data-state="failing"] {
+      background: rgba(248, 113, 113, 0.18);
+      color: #f87171;
+    }
+
+    #goalCard[data-state="at-risk"] {
+      border-color: rgba(249, 115, 22, 0.28);
+    }
+
+    #goalCard[data-state="failing"] {
+      border-color: rgba(248, 113, 113, 0.28);
+    }
+
+    .scoreboard-today {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .scoreboard-stat {
+      background: rgba(13, 26, 51, 0.52);
+      border-radius: 12px;
+      padding: 8px 10px;
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .scoreboard-label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+
+    .scoreboard-value {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .score-history {
+      list-style: none;
+      padding: 0;
+      margin: 8px 0 0;
+      display: grid;
+      gap: 6px;
+    }
+
+    .score-history li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      background: rgba(13, 26, 51, 0.45);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      color: var(--text-secondary);
+    }
+
+    .score-history li[data-met="true"] {
+      color: #34d399;
+      border-color: rgba(34, 197, 94, 0.32);
+    }
+
+    .insight-card .muted {
+      font-size: 12px;
     }
 
     .card-header {
@@ -559,10 +719,10 @@
           <div class="brand-subtitle">Focus Dashboard</div>
         </div>
       </div>
-      <div class="status-pill">Stats</div>
+      <button id="insightToggle" class="view-toggle" type="button">⚡ Pulse</button>
     </header>
 
-    <main class="dashboard">
+    <main id="mainView" class="dashboard">
       <section class="card state-card">
         <div class="card-header">
           <div class="card-title">Current State</div>
@@ -600,6 +760,57 @@
             <li><em class="muted">No data yet.</em></li>
           </ul>
         </details>
+      </section>
+
+    </main>
+
+    <main id="insightView" class="dashboard hidden">
+      <section class="card insight-card">
+        <div class="card-header">
+          <div class="card-title">Pulse</div>
+        </div>
+        <p class="muted" style="margin:0;">Daily goals, streaks, and typing pace live here when you want the deeper dive.</p>
+      </section>
+
+      <section id="goalCard" class="card goal-card" data-state="passing">
+        <div class="card-header">
+          <div class="card-title">Daily Goal</div>
+          <span id="goalStatusBadge" class="chip goal-chip" data-state="passing">Passing</span>
+        </div>
+        <div class="goal-progress">
+          <div class="goal-progress-track">
+            <div id="goalProgressFill" class="goal-progress-fill" data-state="passing"></div>
+          </div>
+          <div id="goalProgressLabel" class="goal-progress-label">No target set</div>
+        </div>
+        <div class="goal-meta">
+          <span id="goalFlowLabel">Flow windows: 0</span>
+          <span id="goalDistractLabel">No distracting cap set</span>
+        </div>
+      </section>
+
+      <section class="card scoreboard-card">
+        <div class="card-header">
+          <div class="card-title">Scoreboard</div>
+          <span id="streakValue" class="chip">Streak: 0 days</span>
+        </div>
+        <div class="scoreboard-today">
+          <div class="scoreboard-stat">
+            <span class="scoreboard-label">Productive</span>
+            <div id="scoreProductive" class="scoreboard-value">0m</div>
+          </div>
+          <div class="scoreboard-stat">
+            <span class="scoreboard-label">Distracting</span>
+            <div id="scoreDistracting" class="scoreboard-value">0m</div>
+          </div>
+          <div class="scoreboard-stat">
+            <span class="scoreboard-label">Flow</span>
+            <div id="scoreFlow" class="scoreboard-value">0</div>
+          </div>
+        </div>
+        <ul id="scoreHistory" class="score-history">
+          <li class="muted">No prior days yet.</li>
+        </ul>
       </section>
 
       <section class="card">
