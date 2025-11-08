@@ -15,11 +15,20 @@ const RETAIN_DAYS = 30;
 const RULES_REFRESH_MINUTES = 10;
 const KPM_MINUTE_MS = 60 * 1000;
 const KPM_MAX_BATCH = 1200;
+// ===== Step 3: Rules/Classification + Daily Summary =====
+const SUMMARY_PRUNE_DAYS = 30;
+let ruleCache = { exact: new Map(), regex: [] };
+
+// WOW state
+let flowState = { active: false, startAt: 0 };
+let lastBreakNudgeAt = 0;
+const BREAK_COOLDOWN_MS = 20 * 60 * 1000;
 const DEFAULT_RULES = {
   breakInterval: 45,
   driftSensitivity: "medium",
   maxDailyHours: 8,
-  voice: true
+  voice: true,
+  distractingLimitMinutes: 60
 };
 const STATE_MESSAGES = {
   drift: "Seems your focus drifted, ready to sprint?",
@@ -72,6 +81,7 @@ async function bootstrap() {
   await ensureTrackingAlarm();
   await hydrateTimeEngine();
   await loadRules();
+  await loadRulesCache();
   await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
 
   const initialIdleState = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
@@ -118,19 +128,26 @@ async function bootstrap() {
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.privacyMode) {
+    if (area !== "local") return;
+
+    if (changes.privacyMode) {
       const nextPrivacy = Boolean(changes.privacyMode.newValue);
-      if (nextPrivacy === privacyMode) return;
-      privacyMode = nextPrivacy;
-      if (privacyMode) {
-        lastActiveTab = null;
-        lastTrackedHost = null;
-        kpmMinuteBucket = 0;
-        kpmMinuteTs = null;
-        updateLiveKpm(null, 0).catch((error) => console.warn("KPM live reset failed", error));
-      } else {
-        refreshActiveTab().catch((error) => console.warn("Privacy resume capture error", error));
+      if (nextPrivacy !== privacyMode) {
+        privacyMode = nextPrivacy;
+        if (privacyMode) {
+          lastActiveTab = null;
+          lastTrackedHost = null;
+          kpmMinuteBucket = 0;
+          kpmMinuteTs = null;
+          updateLiveKpm(null, 0).catch((error) => console.warn("KPM live reset failed", error));
+        } else {
+          refreshActiveTab().catch((error) => console.warn("Privacy resume capture error", error));
+        }
       }
+    }
+
+    if (changes.categorizationRules) {
+      loadRulesCache().catch((error) => console.warn("Rule cache refresh failed", error));
     }
   });
 
@@ -238,6 +255,11 @@ async function refreshActiveTab() {
   }
   lastTrackedHost = active.host || null;
   lastActiveTab = active;
+  try {
+    await maybeEnforceDistractingLimit(active);
+  } catch (error) {
+    console.warn("Distracting limit enforcement failed", error);
+  }
 }
 
 async function ensureTrackingAlarm() {
@@ -259,9 +281,43 @@ async function hydrateTimeEngine() {
   await refreshActiveTab();
 }
 
+async function loadRulesCache() {
+  const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
+  const exact = new Map();
+  const regex = [];
+  for (const key of Object.keys(categorizationRules)) {
+    const value = categorizationRules[key];
+    if (!key || typeof value !== "string") continue;
+    if (/[*.+?^${}()|[\]\\]/.test(key)) {
+      try {
+        regex.push([new RegExp(key, "i"), value]);
+      } catch {
+        // ignore invalid regex rule
+      }
+    } else {
+      exact.set(key.toLowerCase(), value);
+    }
+  }
+  ruleCache = { exact, regex };
+}
+
 async function loadRules() {
   const { rules } = await chrome.storage.local.get("rules");
   rulesConfig = { ...DEFAULT_RULES, ...(rules || {}) };
+}
+
+function classifyHost(host) {
+  if (!host) return "Neutral";
+  const lookup = host.toLowerCase();
+  if (ruleCache.exact.has(lookup)) return ruleCache.exact.get(lookup);
+  for (const [rx, value] of ruleCache.regex) {
+    if (rx.test(host)) return value;
+  }
+  return "Neutral";
+}
+
+function isDistractingHost(host) {
+  return classifyHost(host).startsWith("Distracting");
 }
 
 async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = true, forceLog = false } = {}) {
@@ -298,6 +354,15 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     console.warn("KPM flush on tick failed", error);
   }
 
+  try {
+    await updateDailySummary();
+    await maybeRunBreakCoach();
+    await updateFlowWindow();
+    await maybeEnforceDistractingLimit(lastActiveTab);
+  } catch (error) {
+    console.warn("Post-tick enrichments failed", error);
+  }
+
   lastTickTs = now;
   await chrome.storage.local.set({ lastTickTs: now });
 
@@ -309,6 +374,171 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
   );
 }
 
+async function updateDailySummary() {
+  const today = todayKey();
+  const [{ dailyTimeLog = {} }, { kpmLog = {} }] = await Promise.all([
+    chrome.storage.local.get("dailyTimeLog"),
+    chrome.storage.local.get("kpmLog")
+  ]);
+
+  const dayMap = dailyTimeLog[today] || {};
+  const classes = { Productive: 0, Distracting: 0, Neutral: 0 };
+
+  for (const [host, payload] of Object.entries(dayMap)) {
+    const seconds = Math.max(0, Math.round(payload?.seconds || 0));
+    const bucket = classifyHost(host).split(":")[0] || "Neutral";
+    classes[bucket] = (classes[bucket] || 0) + seconds;
+  }
+
+  const topHosts = Object.entries(dayMap)
+    .map(([host, payload]) => ({
+      host,
+      seconds: Math.max(0, Math.round(payload?.seconds || 0))
+    }))
+    .filter((entry) => entry.seconds > 0)
+    .sort((a, b) => b.seconds - a.seconds)
+    .slice(0, 10);
+
+  const minutes = kpmLog[today]?.minutes || {};
+  const now = Date.now();
+  const floorNow = now - (now % KPM_MINUTE_MS);
+  let total = 0;
+  let buckets = 0;
+  for (let i = 0; i < 5; i += 1) {
+    const ts = floorNow - i * KPM_MINUTE_MS;
+    if (minutes[ts]) {
+      total += minutes[ts];
+      buckets += 1;
+    }
+  }
+  const minuteAvg5 = buckets ? total / buckets : 0;
+
+  const { dailySummary = {} } = await chrome.storage.local.get("dailySummary");
+  dailySummary[today] = {
+    classes,
+    topHosts,
+    kpm: { minuteAvg5 },
+    computedAt: Date.now()
+  };
+  await chrome.storage.local.set({ dailySummary });
+}
+
+async function maybeRunBreakCoach() {
+  const { rules = {}, dailySummary = {} } = await chrome.storage.local.get(["rules", "dailySummary"]);
+  const today = todayKey();
+  const summary = dailySummary[today];
+  if (!summary) return;
+
+  // future tuning: tie to break interval
+  const breakMinutes = Math.max(10, Number(rules.breakInterval) || DEFAULT_RULES.breakInterval);
+  const recentAvg = summary.kpm?.minuteAvg5 || 0;
+  const HIGH_KPM = recentAvg >= 120; // placeholder threshold
+  if (!HIGH_KPM) return;
+
+  const now = Date.now();
+  const streakLikely = now - lastTickTs <= 2 * 60 * 1000;
+  if (!streakLikely) return;
+  if (now - lastBreakNudgeAt < BREAK_COOLDOWN_MS) return;
+
+  lastBreakNudgeAt = now;
+  const msg = "Typing hard for a while. Try a 2-min reset?";
+  await appendNudge({ message: msg, state: "overload", meta: { breakMinutes } });
+  try {
+    if (chrome.notifications) {
+      chrome.notifications.create({
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: "Break Coach",
+        message: msg,
+        priority: 1
+      });
+    }
+  } catch (error) {
+    console.warn("Break coach notification failed", error);
+  }
+}
+
+async function appendNudge(entry) {
+  const day = todayKey();
+  const { nudgeLog = [] } = await chrome.storage.local.get("nudgeLog");
+  const payload = [{ day, at: Date.now(), ...entry }, ...nudgeLog].slice(0, 50);
+  await chrome.storage.local.set({ nudgeLog: payload });
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === "nudges:trigger") {
+    appendNudge({ message: "Manual nudge sent.", state: "manual" }).catch((error) =>
+      console.warn("Manual append failed", error)
+    );
+  }
+  return false;
+});
+
+async function updateFlowWindow() {
+  const { dailySummary = {} } = await chrome.storage.local.get("dailySummary");
+  const summary = dailySummary[todayKey()];
+  if (!summary) return;
+
+  const recentAvg = summary.kpm?.minuteAvg5 || 0;
+  const host = lastActiveTab?.host || "";
+  const productive = classifyHost(host).startsWith("Productive");
+  const FLOW_KPM = recentAvg >= 80;
+
+  if (productive && FLOW_KPM) {
+    if (!flowState.active) {
+      flowState = { active: true, startAt: Date.now() };
+      await markFlow("start", flowState.startAt);
+    }
+  } else if (flowState.active) {
+    const endAt = Date.now();
+    await markFlow("end", endAt, flowState.startAt);
+    flowState = { active: false, startAt: 0 };
+  }
+}
+
+async function markFlow(kind, timestamp, startAt = 0) {
+  const { flowLog = [] } = await chrome.storage.local.get("flowLog");
+  if (kind === "start") {
+    const updated = [{ type: "start", at: timestamp }, ...flowLog].slice(0, 40);
+    await chrome.storage.local.set({ flowLog: updated });
+    return;
+  }
+  const durationMs = Math.max(0, timestamp - startAt);
+  const updated = [{ type: "end", at: timestamp, durationMs }, ...flowLog].slice(0, 40);
+  await chrome.storage.local.set({ flowLog: updated });
+}
+
+async function maybeEnforceDistractingLimit(tab) {
+  if (!tab || privacyMode) return;
+  const limitMinutes = Number(rulesConfig.distractingLimitMinutes);
+  if (!Number.isFinite(limitMinutes) || limitMinutes <= 0) return;
+  const targetUrl = chrome.runtime.getURL("motivator.html");
+  const tabUrl = tab.url || "";
+  if (tabUrl.startsWith(targetUrl) || tabUrl.startsWith("chrome-extension://")) return;
+  const host = tab.host || normalizeHost(tabUrl);
+  if (!host) return;
+  if (!isDistractingHost(host)) return;
+  const today = todayKey();
+  const { dailyTimeLog = {} } = await chrome.storage.local.get("dailyTimeLog");
+  const hostSeconds = Math.max(
+    0,
+    Math.round(dailyTimeLog[today]?.[host]?.seconds || 0)
+  );
+  if (hostSeconds < limitMinutes * 60) return;
+
+  const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
+  if (!tabId) return;
+  try {
+    await chrome.tabs.update(tabId, { url: targetUrl });
+    await appendNudge({
+      message: `Motivation break: time on ${host} hit ${limitMinutes} min.`,
+      state: "limit"
+    });
+  } catch (error) {
+    console.warn("Motivation redirect failed", error);
+  }
+}
+
 async function logTimeForHost(host, addSeconds) {
   if (!host || !Number.isFinite(addSeconds) || addSeconds <= 0) return;
   const day = todayKey();
@@ -316,6 +546,15 @@ async function logTimeForHost(host, addSeconds) {
   if (day !== engineMeta.lastPersistedDay) {
     pruneOldDays(dailyTimeLog, day);
     await rolloverKpmLogs(day);
+    const { dailySummary = {} } = await chrome.storage.local.get("dailySummary");
+    const todayDate = new Date(day);
+    for (const key of Object.keys(dailySummary)) {
+      const diffDays = (todayDate - new Date(key)) / (1000 * 60 * 60 * 24);
+      if (diffDays > SUMMARY_PRUNE_DAYS) {
+        delete dailySummary[key];
+      }
+    }
+    await chrome.storage.local.set({ dailySummary });
     engineMeta.lastPersistedDay = day;
   }
   if (!dailyTimeLog[day]) dailyTimeLog[day] = {};

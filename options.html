@@ -2,52 +2,441 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>NeuroNudge Rules</title>
+  <title>NeuroNudge Control Center</title>
   <style>
-    body { font-family: "Inter", system-ui, sans-serif; max-width: 520px; margin: 40px auto; padding: 0 16px 40px; color: #0f172a; background: #f8fafc; }
-    h1 { font-size: 24px; margin-bottom: 4px; }
-    p { color: #475569; margin-top: 0; }
-    form { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 2px 6px rgba(15,23,42,.08); display: grid; row-gap: 16px; }
-    label { font-weight: 600; font-size: 14px; display: block; margin-bottom: 4px; }
-    input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #cbd5f5; font: inherit; box-sizing: border-box; }
-    .field { display: grid; row-gap: 6px; }
-    .checkbox { display: flex; gap: 8px; align-items: center; }
-    button { border: none; background: #2563eb; color: #fff; padding: 12px; border-radius: 10px; font-size: 15px; cursor: pointer; }
-    .toast { font-size: 13px; color: #047857; }
+    :root {
+      --bg: #040b18;
+      --bg-accent: radial-gradient(140% 100% at 10% -20%, rgba(56, 189, 248, 0.22), transparent 55%),
+        radial-gradient(110% 90% at 90% 0%, rgba(34, 211, 238, 0.18), transparent 50%);
+      --panel: rgba(10, 19, 36, 0.92);
+      --card: rgba(15, 27, 50, 0.95);
+      --card-alt: rgba(17, 32, 60, 0.85);
+      --border: rgba(99, 123, 169, 0.18);
+      --border-strong: rgba(56, 189, 248, 0.35);
+      --accent: #38bdf8;
+      --accent-strong: #22d3ee;
+      --text: #f8fbff;
+      --text-muted: #90a6ce;
+      --text-soft: #5f7396;
+      --shadow: 0 24px 42px rgba(3, 7, 18, 0.55);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Inter", system-ui, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      background-image: var(--bg-accent);
+      background-repeat: no-repeat;
+      background-size: cover;
+      padding: 48px 24px 64px;
+    }
+
+    .page {
+      width: min(880px, 100%);
+      display: grid;
+      gap: 28px;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(10, 22, 41, 0.92), rgba(9, 26, 48, 0.78));
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 24px 28px;
+      display: flex;
+      gap: 20px;
+      align-items: center;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-logo {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      border: 2px solid var(--border-strong);
+      box-shadow: 0 12px 24px rgba(34, 211, 238, 0.35);
+      object-fit: cover;
+      flex-shrink: 0;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .hero p {
+      margin: 6px 0 0;
+      color: var(--text-muted);
+      font-size: 14px;
+      max-width: 520px;
+      line-height: 1.5;
+    }
+
+    .hero-meta {
+      margin-left: auto;
+      display: grid;
+      gap: 8px;
+      align-items: center;
+      text-align: right;
+    }
+
+    .hero-meta span {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-soft);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .content {
+      display: grid;
+      gap: 24px;
+    }
+
+    form {
+      background: linear-gradient(140deg, var(--card), var(--card-alt));
+      border-radius: 20px;
+      padding: 28px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: grid;
+      gap: 20px;
+    }
+
+    .section-heading {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
+    }
+
+    .section-heading h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .section-heading p {
+      margin: 0;
+      color: var(--text-soft);
+      font-size: 13px;
+      line-height: 1.4;
+      max-width: 420px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 18px 24px;
+    }
+
+    label {
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+    }
+
+    input,
+    select {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      background: rgba(9, 17, 33, 0.8);
+      color: var(--text);
+      font: inherit;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    input:focus-visible,
+    select:focus-visible {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.22);
+    }
+
+    input[type="number"]::-webkit-inner-spin-button,
+    input[type="number"]::-webkit-outer-spin-button {
+      opacity: 0.6;
+      height: 28px;
+    }
+
+    .checkbox {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 16px;
+      background: rgba(12, 26, 54, 0.6);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      font-size: 14px;
+      color: var(--text);
+    }
+
+    .checkbox input {
+      width: 20px;
+      height: 20px;
+      accent-color: var(--accent);
+      margin: 0;
+    }
+
+    .divider {
+      height: 1px;
+      background: rgba(148, 163, 184, 0.16);
+      margin: 4px 0;
+    }
+
+    .muted {
+      color: var(--text-soft);
+      font-size: 13px;
+    }
+
+    code {
+      font-family: "Fira Code", "SFMono-Regular", ui-monospace, monospace;
+      font-size: 12px;
+      color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .rule-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1.1fr auto;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .rule-list {
+      list-style: none;
+      margin: 14px 0 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+
+    .rule-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: rgba(12, 24, 46, 0.65);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 14px;
+      padding: 12px 14px;
+      font-size: 13px;
+    }
+
+    .rule-list span {
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }
+
+    .rule-list strong {
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+    }
+
+    button {
+      border: none;
+      border-radius: 14px;
+      padding: 12px 16px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.2s ease;
+      letter-spacing: 0.04em;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, rgba(34, 211, 238, 0.92), rgba(59, 130, 246, 0.92));
+      color: #041121;
+      box-shadow: 0 14px 28px rgba(34, 211, 238, 0.38);
+    }
+
+    button.primary:hover,
+    button.primary:focus-visible {
+      transform: translateY(-1px);
+      box-shadow: 0 18px 36px rgba(34, 211, 238, 0.48);
+    }
+
+    button.secondary {
+      background: rgba(148, 163, 184, 0.12);
+      color: var(--text);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      font-size: 12px;
+      padding: 8px 14px;
+    }
+
+    .rule-list button.secondary {
+      margin-left: 8px;
+      letter-spacing: 0.08em;
+    }
+
+    button.secondary:hover,
+    button.secondary:focus-visible {
+      background: rgba(148, 163, 184, 0.22);
+    }
+
+    .actions {
+      margin-top: 12px;
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .toast {
+      font-size: 13px;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+    }
+
+    @media (max-width: 720px) {
+      body {
+        padding: 32px 18px 48px;
+      }
+
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+        text-align: left;
+      }
+
+      .hero-meta {
+        margin-left: 0;
+        text-align: left;
+      }
+
+      .rule-grid {
+        grid-template-columns: 1fr;
+      }
+
+      button {
+        width: 100%;
+      }
+
+      .actions {
+        flex-direction: column-reverse;
+        align-items: stretch;
+      }
+    }
   </style>
 </head>
 <body>
-  <h1>NeuroNudge Rules</h1>
-  <p>Tune how the focus coach reacts to your habits. All settings stay on-device.</p>
+  <div class="page">
+    <header class="hero">
+      <img class="hero-logo" src="icons/icon128.png" alt="NeuroNudge logo" width="56" height="56" />
+      <div>
+        <h1>NeuroNudge Control Center</h1>
+        <p>Dial in how the coach keeps you on track — cadence, sensitivity, and domain intents all live locally on this device.</p>
+      </div>
+      <div class="hero-meta">
+        <span>Profile</span>
+        <div class="badge">Personal Focus</div>
+      </div>
+    </header>
 
-  <form id="rulesForm">
-    <div class="field">
-      <label for="breakInterval">Break reminder interval (minutes)</label>
-      <input type="number" id="breakInterval" min="5" step="5" required />
-    </div>
+    <main class="content">
+      <form id="rulesForm">
+        <div class="section-heading">
+          <h2>Session Cadence</h2>
+          <p>Set your baseline reminders and how quickly NeuroNudge reacts when your flow drifts.</p>
+        </div>
 
-    <div class="field">
-      <label for="driftSensitivity">Drift sensitivity</label>
-      <select id="driftSensitivity">
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-      </select>
-    </div>
+        <div class="form-grid">
+          <div>
+            <label for="breakInterval">Break reminder interval (minutes)</label>
+            <input type="number" id="breakInterval" min="5" step="5" required />
+          </div>
 
-    <div class="field">
-      <label for="maxDaily">Max daily focus limit (hours)</label>
-      <input type="number" id="maxDaily" min="1" max="16" step="1" required />
-    </div>
+          <div>
+            <label for="driftSensitivity">Drift sensitivity</label>
+            <select id="driftSensitivity">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
 
-    <label class="checkbox">
-      <input type="checkbox" id="voiceNudges" />
-      <span>Enable voice nudges</span>
-    </label>
+          <div>
+            <label for="maxDaily">Max daily focus limit (hours)</label>
+            <input type="number" id="maxDaily" min="1" max="16" step="1" required />
+          </div>
 
-    <button type="submit">Save Rules</button>
-    <div id="toast" class="toast"></div>
-  </form>
+          <div>
+            <label for="distractingLimit">Daily distracting limit (minutes)</label>
+            <input type="number" id="distractingLimit" min="5" step="5" />
+          </div>
+        </div>
+
+        <label class="checkbox">
+          <input type="checkbox" id="voiceNudges" />
+          <span>Enable voice nudges</span>
+        </label>
+
+        <div class="divider"></div>
+
+        <div>
+          <div class="section-heading" style="margin-bottom: 8px;">
+            <h2>Domain Classification</h2>
+            <p>Map hosts or regex patterns to a focus class so nudges adapt across your favorite tools.</p>
+          </div>
+          <p class="muted">Accepted values: Productive, Distracting, Neutral. Add optional tag by appending with <code>:Label</code>.</p>
+          <div class="rule-grid">
+            <input id="ruleKey" placeholder="e.g. github.com or .*youtube.*" />
+            <select id="ruleValue">
+              <option value="Productive">Productive</option>
+              <option value="Productive:Learn">Productive:Learn</option>
+              <option value="Neutral">Neutral</option>
+              <option value="Distracting">Distracting</option>
+            </select>
+            <button id="addRule" type="button" class="primary">Add Rule</button>
+          </div>
+          <ul id="ruleList" class="rule-list"></ul>
+        </div>
+
+        <div class="actions">
+          <div id="toast" class="toast"></div>
+          <button type="submit" class="primary">Save Changes</button>
+        </div>
+      </form>
+    </main>
+  </div>
 
   <script src="options.js"></script>
 </body>

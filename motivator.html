@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Take a Breather</title>
+  <style>
+    body {
+      font-family: "Inter", system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #dbeafe 0%, #f8fafc 100%);
+      color: #1e3a8a;
+      text-align: center;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 16px;
+    }
+    p {
+      font-size: 18px;
+      max-width: 520px;
+      line-height: 1.5;
+    }
+    button {
+      margin-top: 28px;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 999px;
+      background: #1d4ed8;
+      color: #fff;
+      font-size: 15px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>Pause. Breathe. Reset.</h1>
+  <p>“Almost everything will work again if you unplug it for a few minutes, including you.” — Anne Lamott</p>
+  <button id="returnBtn" type="button">Back to work</button>
+
+  <script>
+    document.getElementById("returnBtn").addEventListener("click", () => {
+      window.close();
+    });
+  </script>
+</body>
+</html>
