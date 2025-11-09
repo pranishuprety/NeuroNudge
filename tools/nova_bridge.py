@@ -14,14 +14,17 @@ import logging
 import os
 from textwrap import dedent
 from typing import Annotated, Callable, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 try:  # pragma: no cover - optional SDK import
     from nova_act import NovaAct
+    from nova_act.types.act_errors import ActActuationError  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - allow dry-run without SDK
     NovaAct = None  # type: ignore[misc]
+    ActActuationError = Exception  # type: ignore[assignment]
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -102,36 +105,55 @@ def _describe_break_prompt(payload: BreakRitualRequest) -> str:
 
 def _describe_reentry_prompt(payload: ReentryRequest) -> str:
     safe_note = _strip_note(payload.note)
-    base = dedent(
-        f"""
-        Help the user resume work after their break.
-        1. Navigate to {payload.url}.
-        2. Wait for the page to finish loading.
-        3. Focus the best matching element for the CSS selector "{payload.selector_hint}".
-        4. Place the text caret at the end of the existing content without submitting the document.
-        """
-    ).strip()
+    host = urlparse(payload.url).netloc.lower()
+
+    if "docs.google.com" in host:
+        base = dedent(
+            f"""
+            Help the writer resume typing in their Google Doc after the break.
+            1. Navigate to {payload.url}.
+            2. Wait for the document canvas to finish loading.
+            3. Click inside the main editor to focus it.
+            4. Place the caret at the end of the document without modifying existing text.
+            """
+        ).strip()
+    else:
+        base = dedent(
+            f"""
+            Help the user resume work on their current page.
+            1. Navigate to {payload.url}.
+            2. Wait for the page to finish loading fully (handle any login prompts if possible).
+            3. Focus the element that best matches "{payload.selector_hint}".
+            4. Place the caret at the end of the existing content without submitting forms or triggering navigation.
+            """
+        ).strip()
     if safe_note:
         base += f'\n5. Insert this note verbatim so the user remembers their next step: "{safe_note}".'
     base += "\n6. Reply in chat with: \"Ready to resume.\""
     return base
 
 
-async def _invoke_nova(prompt: str, starting_page: Optional[str] = None) -> None:
+async def _invoke_nova(prompt: str, starting_page: Optional[str] = None) -> bool:
     if not _nova_available():
         logger.info("Nova unavailable; skipping prompt: %s", prompt.replace("\n", " "))
-        return
+        return False
+
+    result = {"ok": True}
 
     def _runner() -> None:
         kwargs = {"starting_page": starting_page} if starting_page else {}
         try:
             with NovaAct(**kwargs) as nova:  # type: ignore[operator]
                 nova.act(prompt)
+        except ActActuationError as exc:  # pragma: no cover - SDK-specific failure
+            result["ok"] = False
+            logger.warning("Nova ACT actuation error: %s", exc)
         except Exception as exc:  # pragma: no cover - external SDK behavior
+            result["ok"] = False
             logger.warning("Nova ACT invocation failed: %s", exc)
-            raise
 
     await _run_in_executor(_runner)
+    return bool(result["ok"])
 
 
 @app.post("/break-ritual")
@@ -148,8 +170,10 @@ async def trigger_break_ritual(payload: BreakRitualRequest) -> dict:
 
     if _nova_available():
         prompt = _describe_break_prompt(payload)
-        await _invoke_nova(prompt, starting_page="https://docs.google.com/")
-        return {"status": "ok", "nova": True}
+        success = await _invoke_nova(prompt, starting_page="https://docs.google.com/")
+        if success:
+            return {"status": "ok", "nova": True}
+        logger.warning("Nova break ritual fell back to local handling.")
 
     await asyncio.sleep(min(2, max(0.1, payload.seconds / 60)))
     return {"status": "ok", "nova": False, "skipped": "nova_unavailable"}
@@ -163,6 +187,11 @@ async def trigger_reentry(payload: ReentryRequest) -> dict:
     if not payload.url:
         raise HTTPException(status_code=400, detail="Missing url.")
 
+    parsed = urlparse(payload.url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Invalid reentry URL supplied: %s", payload.url)
+        return {"status": "ok", "nova": False, "skipped": "invalid_url"}
+
     logger.info(
         "Triggering Nova reentry: url=%s selector_hint=%s note_len=%d",
         payload.url,
@@ -172,8 +201,10 @@ async def trigger_reentry(payload: ReentryRequest) -> dict:
 
     if _nova_available():
         prompt = _describe_reentry_prompt(payload)
-        await _invoke_nova(prompt, starting_page=payload.url)
-        return {"status": "ok", "nova": True}
+        success = await _invoke_nova(prompt, starting_page=payload.url)
+        if success:
+            return {"status": "ok", "nova": True}
+        logger.warning("Nova reentry failed; continuing without automation.")
 
     await asyncio.sleep(0.1)
     return {"status": "ok", "nova": False, "skipped": "nova_unavailable"}
