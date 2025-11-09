@@ -56,6 +56,16 @@ const STATE_MESSAGES = {
   steady: "Good rhythm, keep it up!"
 };
 
+// ===== RBF: predictive drift forecaster =====
+const RBF_COOLDOWN_MS = 20 * 60 * 1000; // 20m cool-down between prompts
+const RBF_MIN_THRESHOLD_MIN = 8; // show banner when TTD <= 8-10m
+const RBF_FLOW_THRESHOLD_MIN = 12; // celebrate when TTD comfortably high
+const RBF_IGNORE_KEY = "rbfIgnoreUntil";
+const RBF_FORECAST_KEY = "ttdForecast";
+let switchesRolling = []; // [{at: epoch_ms}] recent tab activations (last 15m)
+let lastPreemptiveResetAt = 0;
+let lastRbfSignal = "neutral";
+
 let privacyMode = false;
 let currentIdleState = "active";
 let lastActiveStart = Date.now();
@@ -93,7 +103,14 @@ async function bootstrap() {
   chrome.idle.setDetectionInterval(IDLE_DETECTION_INTERVAL_SECONDS);
 
   const [storedLocal, summaryStore, storedState] = await Promise.all([
-    chrome.storage.local.get(["privacyMode", BLOCKED_HOSTS_KEY, BANNED_HOSTS_KEY, "kpmLive"]),
+    chrome.storage.local.get([
+      "privacyMode",
+      BLOCKED_HOSTS_KEY,
+      BANNED_HOSTS_KEY,
+      "kpmLive",
+      "lastPreemptiveResetAt",
+      "preemptivePauseUntil"
+    ]),
     getNormalizedSummary(),
     chrome.storage.local.get("focusState")
   ]);
@@ -102,7 +119,9 @@ async function bootstrap() {
     privacyMode: storedPrivacy = false,
     [BLOCKED_HOSTS_KEY]: storedBlockedHosts = [],
     [BANNED_HOSTS_KEY]: storedBannedHosts = [],
-    kpmLive: storedKpmLive
+    kpmLive: storedKpmLive,
+    lastPreemptiveResetAt: storedLastReset = 0,
+    preemptivePauseUntil: storedPauseUntil = 0
   } = storedLocal;
 
   privacyMode = storedPrivacy;
@@ -124,6 +143,12 @@ async function bootstrap() {
       kpmMinuteTs = ts;
       kpmMinuteBucket = Math.max(0, Math.round(pending));
     }
+  }
+  if (Number.isFinite(Number(storedLastReset))) {
+    lastPreemptiveResetAt = Number(storedLastReset) || 0;
+  }
+  if (Number.isFinite(Number(storedPauseUntil)) && Number(storedPauseUntil) > Date.now()) {
+    await chrome.storage.local.set({ preemptivePauseUntil: Number(storedPauseUntil) });
   }
   lastFocusState = storedState.focusState || null;
   await chrome.storage.local.set({ [SUMMARY_KEY]: summaryStore });
@@ -155,9 +180,25 @@ async function bootstrap() {
   });
 
   chrome.tabs.onActivated.addListener(() => {
-    handleTick("tab switch", { refreshActive: false })
-      .catch((error) => console.warn("Tick on tab switch failed", error))
-      .finally(() => refreshActiveTab().catch((error) => console.warn("Tab focus error", error)));
+    switchesRolling.push({ at: Date.now() });
+    pruneSwitches();
+    (async () => {
+      try {
+        await handleTick("tab switch", { refreshActive: false });
+      } catch (error) {
+        console.warn("Tick on tab switch failed", error);
+      }
+      try {
+        await refreshActiveTab();
+      } catch (error) {
+        console.warn("Tab focus error", error);
+      }
+      try {
+        await computeRBF("switch");
+      } catch (error) {
+        console.warn("RBF compute on switch failed", error);
+      }
+    })();
   });
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -187,6 +228,11 @@ async function bootstrap() {
           await refreshActiveTab();
         } catch (error) {
           console.warn("Tab update error", error);
+        }
+        try {
+          await computeRBF("switch");
+        } catch (error) {
+          console.warn("RBF compute on tab update failed", error);
         }
       }
     })().catch((error) => console.warn("Tab update handler failed", error));
@@ -343,29 +389,32 @@ async function bootstrap() {
     if (alarm.name === RULES_REFRESH_ALARM) {
       loadRules().catch((error) => console.warn("Rules refresh failed", error));
     }
+    if (alarm.name === "rbfRemind") {
+      computeRBF("remind").catch((error) => console.warn("RBF remind compute failed", error));
+    }
   });
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message?.type === "elevenlabs:configUpdated") {
-    elevenLabsCache = { apiKey: null, voiceId: null, modelId: "eleven_monolingual_v1", fetchedAt: 0 };
-    sendResponse?.({ success: true });
-    return false;
-  }
-  if (message?.type === "kpm:batch") {
-    handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
-    return false;
-  }
-  if (message?.type === "quotes:fetchRandom") {
-    fetchMotivationalQuote()
-      .then((quote) => sendResponse({ success: true, quote }))
-      .catch((error) => sendResponse({ success: false, error: error.message }));
-    return true;
-  }
-  if (message?.type === "nudges:trigger") {
-    evaluateStateAndNudge("manual", { force: true })
-      .then((state) => sendResponse({ state }))
-      .catch((error) => sendResponse({ error: error.message }));
-    return true;
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === "elevenlabs:configUpdated") {
+      elevenLabsCache = { apiKey: null, voiceId: null, modelId: "eleven_monolingual_v1", fetchedAt: 0 };
+      sendResponse?.({ success: true });
+      return false;
+    }
+    if (message?.type === "kpm:batch") {
+      handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
+      return false;
+    }
+    if (message?.type === "quotes:fetchRandom") {
+      fetchMotivationalQuote()
+        .then((quote) => sendResponse({ success: true, quote }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "nudges:trigger") {
+      evaluateStateAndNudge("manual", { force: true })
+        .then((state) => sendResponse({ state }))
+        .catch((error) => sendResponse({ error: error.message }));
+      return true;
     }
     if (message?.type === "activity:summary") {
       getNormalizedSummary()
@@ -383,6 +432,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       blockedDistractingHosts.clear();
       blockedHostMeta.clear();
       persistBlockedHosts().catch((error) => console.warn("Blocked host reset failed", error));
+      return false;
+    }
+    if (message?.type === "rbf:startReset") {
+      startPreemptiveReset(message.note || "", sender).catch((error) =>
+        console.warn("RBF start reset failed", error)
+      );
+      return false;
+    }
+    if (message?.type === "rbf:remind") {
+      const mins = Math.max(1, Number(message.minutes) || 5);
+      chrome.alarms.create("rbfRemind", { when: Date.now() + mins * 60000 });
+      return false;
+    }
+    if (message?.type === "rbf:ignore") {
+      const mins = Math.max(5, Number(message.minutes) || 30);
+      chrome.storage.local
+        .set({ [RBF_IGNORE_KEY]: Date.now() + mins * 60000 })
+        .catch((error) => console.warn("RBF ignore set failed", error));
       return false;
     }
     if (message?.type === "parentMode:snapshot") {
@@ -769,6 +836,13 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     return;
   }
 
+  const { preemptivePauseUntil = 0 } = await chrome.storage.local.get("preemptivePauseUntil");
+  if (now < Number(preemptivePauseUntil || 0)) {
+    lastTickTs = now;
+    await chrome.storage.local.set({ lastTickTs: now });
+    return;
+  }
+
   if (
     !lastActiveTab ||
     !lastActiveTab.host ||
@@ -816,6 +890,12 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     console.warn("Post-tick enrichments failed", error);
   }
 
+  try {
+    await computeRBF("tick");
+  } catch (error) {
+    console.warn("RBF compute failed", error);
+  }
+
   lastTickTs = now;
   await chrome.storage.local.set({ lastTickTs: now });
 
@@ -827,6 +907,228 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
   );
 }
 
+function pruneSwitches(now = Date.now()) {
+  const FIFTEEN = 15 * 60 * 1000 + 60 * 10; // slightly over 15m to account for jitter
+  switchesRolling = switchesRolling.filter((entry) => now - entry.at <= FIFTEEN);
+}
+
+async function computeRBF(reason = "tick") {
+  try {
+    const [{ privacyMode: storedPrivacy = false }, active] = await Promise.all([
+      chrome.storage.local.get("privacyMode"),
+      getActiveTab()
+    ]);
+    const privacyEnabled =
+      typeof storedPrivacy === "object"
+        ? Boolean(storedPrivacy.privacyMode)
+        : Boolean(storedPrivacy);
+    if (privacyEnabled) {
+      if (active?.tabId) {
+        chrome.tabs.sendMessage(active.tabId, { type: "rbf:status", signal: "off" }).catch(() => {});
+      }
+      lastRbfSignal = "neutral";
+      return;
+    }
+    if (!active?.host) {
+      if (active?.tabId) {
+        chrome.tabs.sendMessage(active.tabId, { type: "rbf:status", signal: "off" }).catch(() => {});
+      }
+      lastRbfSignal = "neutral";
+      return;
+    }
+    const { [RBF_IGNORE_KEY]: ignoreUntilRaw = 0 } = await chrome.storage.local.get(RBF_IGNORE_KEY);
+    const now = Date.now();
+    const ignoreUntil = Number(ignoreUntilRaw || 0);
+    if (now < ignoreUntil) {
+      const remaining = Math.max(1, Math.ceil((ignoreUntil - now) / 60000));
+      chrome.tabs
+        .sendMessage(active.tabId, {
+          type: "rbf:status",
+          signal: "snoozed",
+          minutes: remaining,
+          confidence: 1,
+          host: active.host
+        })
+        .catch(() => {});
+      lastRbfSignal = "snoozed";
+      return;
+    }
+
+    pruneSwitches(now);
+
+    const today = todayKey();
+    const [{ kpmLog = {} }, { dailySummary = {} }, { lastPreemptiveResetAt: storedLpr = 0 }] =
+      await Promise.all([
+        chrome.storage.local.get("kpmLog"),
+        chrome.storage.local.get("dailySummary"),
+        chrome.storage.local.get("lastPreemptiveResetAt")
+      ]);
+
+    lastPreemptiveResetAt = Number(storedLpr) || 0;
+
+    const minutes = kpmLog[today]?.minutes || {};
+    const floorNow = now - (now % KPM_MINUTE_MS);
+    let sum5 = 0;
+    let cnt5 = 0;
+    for (let i = 0; i < 5; i += 1) {
+      const ts = floorNow - i * KPM_MINUTE_MS;
+      if (minutes[ts]) {
+        sum5 += minutes[ts];
+        cnt5 += 1;
+      }
+    }
+    const kpmAvg5 = cnt5 ? sum5 / cnt5 : 0;
+    const kpmNow = minutes[floorNow] || 0;
+    const kpmPrev = minutes[floorNow - KPM_MINUTE_MS] || 0;
+    const kpmSlope1 = kpmNow - kpmPrev;
+
+    const fiveAgo = now - 5601000;
+    const switch5 = switchesRolling.filter((s) => s.at >= fiveAgo).length;
+    const switchesPerMin = switch5 / 5;
+
+    const summary = dailySummary[today] || {};
+    const classes = summary.classes || { Productive: 0, Distracting: 0, Neutral: 0 };
+    const total =
+      Math.max(
+        1,
+        (classes.Productive || 0) + (classes.Distracting || 0) + (classes.Neutral || 0)
+      ) || 1;
+    const distractShare = (classes.Distracting || 0) / total;
+
+    const minsSinceBreak = (now - (lastPreemptiveResetAt || 0)) / 60000;
+    const hour = new Date().getHours();
+    const hourBucket = hour >= 14 && hour <= 17 ? 1 : hour <= 10 ? 0.5 : 0;
+
+    const z =
+      -2.2 +
+      -0.01 * kpmAvg5 +
+      -0.03 * kpmSlope1 +
+      2.0 * switchesPerMin +
+      1.6 * distractShare +
+      0.02 * minsSinceBreak +
+      0.4 * hourBucket;
+
+    const risk = 1 / (1 + Math.exp(-z));
+    const ttdMinutes = Math.max(1, Math.round(12 - 10 * risk));
+    const confidence = Math.min(0.95, Math.max(0.5, 0.55 + 0.35 * risk));
+
+    const forecast = {
+      minutes: ttdMinutes,
+      confidence,
+      features: { kpmAvg5, kpmSlope1, switchesPerMin, distractShare },
+      computedAt: now,
+      host: active.host,
+      reason
+    };
+    await chrome.storage.local.set({ [RBF_FORECAST_KEY]: forecast });
+
+    const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
+    if (
+      categorizationRules &&
+      Object.keys(categorizationRules).length > 0 &&
+      (!ruleCache || (!ruleCache.exact?.size && !ruleCache.domains?.size))
+    ) {
+      await loadRulesCache().catch(() => {});
+    }
+    const cls =
+      typeof classifyHost === "function"
+        ? classifyHost(active.host)
+        : categorizationRules[active.host] || "Neutral";
+    const cooldownOk = now - (lastPreemptiveResetAt || 0) >= RBF_COOLDOWN_MS;
+    const ttdOk = ttdMinutes <= RBF_MIN_THRESHOLD_MIN;
+    const productive = (cls || "").startsWith("Productive");
+
+    let nextSignal = "neutral";
+    if (ttdOk && cooldownOk && productive) {
+      nextSignal = "drop";
+      chrome.tabs.sendMessage(active.tabId, { type: "rbf:show", minutes: ttdMinutes, confidence }).catch(() => {});
+    } else {
+      chrome.tabs.sendMessage(active.tabId, { type: "rbf:hide" }).catch(() => {});
+      if (productive && ttdMinutes >= RBF_FLOW_THRESHOLD_MIN) {
+        nextSignal = "flow";
+      }
+    }
+
+    chrome.tabs
+      .sendMessage(active.tabId, {
+        type: "rbf:status",
+        signal: nextSignal,
+        minutes: ttdMinutes,
+        confidence,
+        host: active.host,
+        features: forecast.features
+      })
+      .catch(() => {});
+
+    if (nextSignal !== lastRbfSignal && chrome.notifications) {
+      if (nextSignal === "drop") {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: "Focus dip soon",
+          message: `Energy likely fades in ~${ttdMinutes} min. Take a 90s reset to stay sharp.`,
+          priority: 1
+        });
+      } else if (nextSignal === "flow") {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: "Momentum is strong",
+          message: `Great groove right now—ride it for the next ${ttdMinutes} minutes.`,
+          priority: 0
+        });
+      }
+    }
+    lastRbfSignal = nextSignal;
+  } catch (error) {
+    console.warn("RBF compute error", error);
+  }
+}
+
+async function startPreemptiveReset(note = "", sender = {}) {
+  const now = Date.now();
+  const active = await getActiveTab();
+  const day = todayKey();
+  const { resumeNotes = {} } = await chrome.storage.local.get("resumeNotes");
+  resumeNotes[day] = resumeNotes[day] || {};
+  if (active?.host) {
+    resumeNotes[day][active.host] = note || "";
+  }
+
+  await chrome.storage.local.set({
+    lastPreemptiveResetAt: now,
+    preemptivePauseUntil: now + 90000,
+    resumeNotes
+  });
+
+  lastPreemptiveResetAt = now;
+
+  const originTabId = active?.tabId || sender?.tab?.id || 0;
+
+  bridgeBreakRitual(90, "breathing", true)
+    .finally(async () => {
+      await chrome.storage.local.set({ preemptivePauseUntil: 0 });
+      const fresh = await getActiveTab();
+      const { resumeNotes: rn = {} } = await chrome.storage.local.get("resumeNotes");
+      const saved = rn[day]?.[fresh?.host || ""] || "";
+      bridgeReentry(fresh?.url || "", saved, "textarea, [contenteditable=true]");
+      const targetTabId = fresh?.tabId || originTabId;
+      if (targetTabId) {
+        chrome.tabs.sendMessage(targetTabId, { type: "rbf:hide" }).catch(() => {});
+        chrome.tabs
+          .sendMessage(targetTabId, {
+            type: "rbf:status",
+            signal: "neutral",
+            minutes: 0,
+            confidence: 0,
+            host: fresh?.host || ""
+          })
+          .catch(() => {});
+      }
+      computeRBF("reset").catch((error) => console.warn("RBF recompute after reset failed", error));
+    })
+    .catch((error) => console.warn("Nova break ritual error", error));
+}
 async function updateDailySummary() {
   const today = todayKey();
   const [{ dailyTimeLog = {} }, { kpmLog = {} }] = await Promise.all([
@@ -1896,4 +2198,33 @@ async function updateSummary(mutator) {
   await Promise.resolve(mutator(summary));
   await chrome.storage.local.set({ [SUMMARY_KEY]: summary });
   return summary;
+}
+
+async function bridgeBreakRitual(seconds = 90, kind = "breathing", muteSlack = true) {
+  try {
+    await fetch("http://127.0.0.1:5057/break-ritual", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds, kind, mute_slack: muteSlack })
+    });
+  } catch (error) {
+    console.warn("Nova ritual failed", error);
+  }
+}
+
+async function bridgeReentry(url, note, selectorHint) {
+  if (!url) return;
+  try {
+    await fetch("http://127.0.0.1:5057/reentry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        note: note || "",
+        selector_hint: selectorHint || "textarea, [contenteditable=true]"
+      })
+    });
+  } catch (error) {
+    console.warn("Nova reentry failed", error);
+  }
 }

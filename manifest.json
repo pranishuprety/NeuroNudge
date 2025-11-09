@@ -8,7 +8,8 @@
     "<all_urls>",
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://api.elevenlabs.io/*"
+    "https://api.elevenlabs.io/*",
+    "http://127.0.0.1:5057/*"
   ],
   "background": { "service_worker": "background.js", "type": "module" },
   "options_page": "options.html",
@@ -20,6 +21,12 @@
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content_rbf_overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [
