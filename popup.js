@@ -1,5 +1,5 @@
 // popup.js
-// Presents the Phase 4 dashboard: summarizes focus vs idle, top sites, mood &
+// Presents the Phase 4 dashboard: summarizes focus vs idle, top sites, modes &
 // privacy controls, and the most recent nudges while keeping everything local.
 
 const stateEl = document.getElementById("stateValue");
@@ -36,6 +36,7 @@ const scoreProductiveEl = document.getElementById("scoreProductive");
 const scoreDistractingEl = document.getElementById("scoreDistracting");
 const scoreFlowEl = document.getElementById("scoreFlow");
 const scoreHistoryEl = document.getElementById("scoreHistory");
+const MODE_OPTIONS = ["relaxed", "focused", "research", "idle"];
 
 function setPanelOpen(isOpen) {
   if (!sidePanelEl || !panelBackdropEl) return;
@@ -241,7 +242,8 @@ async function refresh() {
   renderGoals(storage.goalStatus, goalsConfig, storage.scoreboard);
   renderScoreboard(storage.scoreboard);
 
-  moodSelect.value = storage.userMood || "neutral";
+  const storedMode = MODE_OPTIONS.includes(storage.userMood) ? storage.userMood : MODE_OPTIONS[0];
+  moodSelect.value = storedMode;
   privacyToggle.checked = Boolean(storage.privacyMode);
 }
 
@@ -402,7 +404,6 @@ function summarizeKpm(kpmLog = {}, kpmLive = {}, privacyEnabled = false) {
     status
   };
 }
-
 
 function todayKey() {
   return new Date().toISOString().split("T")[0];
@@ -588,12 +589,12 @@ function classifyBase(host, cache) {
 }
 
 saveMoodBtn.addEventListener("click", async () => {
-  const mood = moodSelect.value;
+  const mode = MODE_OPTIONS.includes(moodSelect.value) ? moodSelect.value : MODE_OPTIONS[0];
   const { moodLog = [] } = await chrome.storage.local.get("moodLog");
-  const updated = [{ mood, at: Date.now() }, ...moodLog].slice(0, 50);
-  await chrome.storage.local.set({ userMood: mood, moodLog: updated });
-  saveMoodBtn.textContent = "Saved!";
-  setTimeout(() => (saveMoodBtn.textContent = "Save Mood"), 1500);
+  const updated = [{ mood: mode, at: Date.now() }, ...moodLog].slice(0, 50);
+  await chrome.storage.local.set({ userMood: mode, moodLog: updated });
+  saveMoodBtn.textContent = "Mode set!";
+  setTimeout(() => (saveMoodBtn.textContent = "Set Mode"), 1500);
 });
 
 privacyToggle.addEventListener("change", async (event) => {
