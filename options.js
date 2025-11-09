@@ -84,6 +84,10 @@ const ruleKeyEl = document.getElementById("ruleKey");
 const ruleValueEl = document.getElementById("ruleValue");
 const addRuleBtn = document.getElementById("addRule");
 const ruleListEl = document.getElementById("ruleList");
+const siteLimitHostInput = document.getElementById("siteLimitHost");
+const siteLimitMinutesInput = document.getElementById("siteLimitMinutes");
+const addSiteLimitBtn = document.getElementById("addSiteLimit");
+const siteLimitListEl = document.getElementById("siteLimitList");
 
 addRuleBtn?.addEventListener("click", async () => {
   const key = (ruleKeyEl?.value || "").trim();
@@ -129,6 +133,53 @@ function sanitize(value = "") {
   const div = document.createElement("div");
   div.textContent = value;
   return div.innerHTML;
+}
+
+addSiteLimitBtn?.addEventListener("click", async () => {
+  const host = sanitizeRuleKeyInput(siteLimitHostInput?.value || "");
+  const minutes = Number(siteLimitMinutesInput?.value || 0);
+  if (!host || !Number.isFinite(minutes) || minutes <= 0) return;
+  const seconds = Math.round(minutes * 60);
+  const limits = await ensureNormalizedSiteLimits();
+  limits[host] = seconds;
+  await chrome.storage.local.set({ distractingSiteLimits: limits });
+  if (siteLimitHostInput) siteLimitHostInput.value = "";
+  if (siteLimitMinutesInput) siteLimitMinutesInput.value = "";
+  await renderSiteLimits();
+});
+
+async function renderSiteLimits() {
+  if (!siteLimitListEl) return;
+  const limits = await ensureNormalizedSiteLimits();
+  const entries = Object.entries(limits);
+  if (entries.length === 0) {
+    siteLimitListEl.innerHTML = `<li><em class="muted">No per-site limits yet.</em></li>`;
+    return;
+  }
+  siteLimitListEl.innerHTML = entries
+    .map(
+      ([host, seconds]) =>
+        `<li><span>${sanitize(host)} · ${formatMinutesFromSeconds(seconds)}</span>
+      <button type="button" data-host="${encodeURIComponent(host)}" class="secondary">Remove</button></li>`
+    )
+    .join("");
+  siteLimitListEl.querySelectorAll("button[data-host]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const hostKey = decodeURIComponent(btn.getAttribute("data-host") || "");
+      const limitsToUpdate = await ensureNormalizedSiteLimits();
+      delete limitsToUpdate[hostKey];
+      await chrome.storage.local.set({ distractingSiteLimits: limitsToUpdate });
+      await renderSiteLimits();
+    });
+  });
+}
+
+function formatMinutesFromSeconds(seconds = 0) {
+  const total = Number(seconds) || 0;
+  if (total <= 0) return "0m";
+  const minutes = total / 60;
+  if (minutes < 1) return "<1m";
+  return `${Math.round(minutes)}m`;
 }
 
 function sanitizeRuleKeyInput(rawKey) {
@@ -179,7 +230,33 @@ async function ensureNormalizedRules() {
   return normalized;
 }
 
-initPromise.then(renderRules);
+initPromise.then(() => {
+  renderRules();
+  renderSiteLimits();
+});
+
+function normalizeSiteLimitDictionary(input = {}) {
+  const normalized = {};
+  let changed = false;
+  Object.entries(input).forEach(([key, value]) => {
+    const host = sanitizeRuleKeyInput(key);
+    const seconds = Number(value);
+    if (!host || !Number.isFinite(seconds) || seconds <= 0) return;
+    const rounded = Math.round(seconds);
+    normalized[host] = rounded;
+    if (host !== key || rounded !== seconds) changed = true;
+  });
+  return { normalized, changed };
+}
+
+async function ensureNormalizedSiteLimits() {
+  const { distractingSiteLimits = {} } = await chrome.storage.local.get("distractingSiteLimits");
+  const { normalized, changed } = normalizeSiteLimitDictionary(distractingSiteLimits);
+  if (changed) {
+    await chrome.storage.local.set({ distractingSiteLimits: normalized });
+  }
+  return normalized;
+}
 
 function normalizeGoals(raw) {
   const input = raw && typeof raw === "object" ? raw : {};

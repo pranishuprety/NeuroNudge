@@ -315,9 +315,56 @@
     .actions {
       margin-top: 12px;
       display: flex;
-      justify-content: flex-end;
+      justify-content: space-between;
       gap: 12px;
       align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .action-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .limit-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .limit-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .limit-actions input {
+      flex: 1;
+    }
+
+    .limit-list {
+      list-style: none;
+      padding: 0;
+      margin: 12px 0 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .limit-list li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(17, 31, 55, 0.5);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+
+    .limit-list li button {
+      font-size: 12px;
+      padding: 6px 10px;
     }
 
     .toast {
@@ -344,6 +391,15 @@
 
       .rule-grid {
         grid-template-columns: 1fr;
+      }
+
+      .limit-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .limit-actions {
+        flex-direction: column;
+        align-items: stretch;
       }
 
       button {
@@ -435,6 +491,23 @@
 
         <div>
           <div class="section-heading" style="margin-bottom: 8px;">
+            <h2>Per-site daily limits</h2>
+            <p class="muted">Block a site after it reaches its daily allowance.</p>
+          </div>
+          <div class="limit-grid">
+            <input id="siteLimitHost" placeholder="e.g. youtube.com" />
+            <div class="limit-actions">
+              <input type="number" id="siteLimitMinutes" min="1" step="1" placeholder="Minutes" />
+              <button type="button" id="addSiteLimit" class="primary">Add Limit</button>
+            </div>
+          </div>
+          <ul id="siteLimitList" class="limit-list"></ul>
+        </div>
+
+        <div class="divider"></div>
+
+        <div>
+          <div class="section-heading" style="margin-bottom: 8px;">
             <h2>Domain Classification</h2>
             <p>Map hosts or regex patterns to a focus class so nudges adapt across your favorite tools.</p>
           </div>
@@ -454,7 +527,9 @@
 
         <div class="actions">
           <div id="toast" class="toast"></div>
-          <button type="submit" class="primary">Save Changes</button>
+          <div class="action-buttons">
+            <button type="submit" class="primary">Save Changes</button>
+          </div>
         </div>
       </form>
     </main>

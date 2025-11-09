@@ -268,7 +268,7 @@ function renderGoals(goalStatus, goalsConfig, scoreboard) {
 
   goalProgressLabelEl.textContent =
     targetSec > 0
-      ? `${pct}% · ${remainingSec > 0 ? `${Math.ceil(remainingSec / 60)}m left` : "Target met"}`
+      ? `${pct}% · ${remainingSec > 0 ? `${formatMinutes(remainingSec, "ceil")} left` : "Target met"}`
       : "No target set";
 
   goalStatusBadgeEl.textContent = GOAL_STATE_LABELS[stateKey] || "Passing";
@@ -407,8 +407,14 @@ function todayKey() {
   return new Date().toISOString().split("T")[0];
 }
 
-function formatMinutes(seconds = 0) {
-  return `${Math.max(0, Math.round(seconds / 60))}m`;
+function formatMinutes(seconds = 0, rounding = "round") {
+  const total = Number(seconds) || 0;
+  if (total <= 0) return "0m";
+  const minutes = total / 60;
+  if (minutes < 1) return "<1m";
+  if (rounding === "ceil") return `${Math.ceil(minutes)}m`;
+  if (rounding === "floor") return `${Math.floor(minutes)}m`;
+  return `${Math.round(minutes)}m`;
 }
 
 function formatClock(timestamp) {
@@ -475,32 +481,101 @@ function flowsToMarkup(flows) {
     .join("");
 }
 
+function parseRuleKeyForCache(rawKey) {
+  if (!rawKey || typeof rawKey !== "string") return null;
+  let base = rawKey.trim();
+  const colonIndex = base.indexOf(":");
+  if (colonIndex !== -1) {
+    base = base.slice(0, colonIndex).trim();
+  }
+  if (!base) return null;
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      const parsed = new URL(base);
+      base = parsed.hostname || parsed.host || base;
+    } catch {
+      base = base.replace(/^https?:\/\//i, "");
+    }
+  }
+  base = base.replace(/^www\./i, "");
+  base = base.replace(/\/.*$/, "");
+  base = base.trim();
+  if (!base) return null;
+  const regexSpecial = /[*^$+?()[\]{}|\\]/;
+  if (regexSpecial.test(base)) {
+    try {
+      return { type: "regex", value: new RegExp(base, "i") };
+    } catch {
+      return null;
+    }
+  }
+  const lowered = base.toLowerCase();
+  if (lowered.includes(":") && !lowered.includes("@")) {
+    return { type: "exact", value: lowered };
+  }
+  if (lowered.includes(".")) {
+    return { type: "domain", value: lowered };
+  }
+  return { type: "contains", value: lowered };
+}
+
 function buildRuleCache(rules = {}) {
   const exact = new Map();
+  const domains = new Map();
+  const contains = [];
   const regex = [];
   Object.keys(rules).forEach((key) => {
-    const value = rules[key];
-    if (!key || typeof value !== "string") return;
-    if (/[*.+?^${}()|[\]\\]/.test(key)) {
-      try {
-        regex.push([new RegExp(key, "i"), value]);
-      } catch {
-        // ignore invalid regex
-      }
-    } else {
-      exact.set(key.toLowerCase(), value);
+    const focusClass = rules[key];
+    if (typeof focusClass !== "string") return;
+    const parsed = parseRuleKeyForCache(key);
+    if (!parsed) return;
+    switch (parsed.type) {
+      case "regex":
+        regex.push([parsed.value, focusClass.trim()]);
+        break;
+      case "contains":
+        contains.push([parsed.value, focusClass.trim()]);
+        break;
+      case "exact":
+        exact.set(parsed.value, focusClass.trim());
+        break;
+      case "domain":
+        domains.set(parsed.value, focusClass.trim());
+        break;
+      default:
+        break;
     }
   });
-  return { exact, regex };
+  return { exact, domains, contains, regex };
 }
 
 function classifyHostWithRules(host = "", cache) {
-  if (!cache) cache = { exact: new Map(), regex: [] };
+  if (!cache) cache = { exact: new Map(), domains: new Map(), contains: [], regex: [] };
   if (!host) return "Neutral";
-  const lookup = host.toLowerCase();
-  if (cache.exact.has(lookup)) return cache.exact.get(lookup) || "Neutral";
-  for (const [rx, value] of cache.regex) {
-    if (rx.test(host)) return value;
+  const normalized = host.toLowerCase();
+  if (cache.exact?.has(normalized)) return cache.exact.get(normalized) || "Neutral";
+  if (cache.domains) {
+    for (const [domain, value] of cache.domains.entries()) {
+      if (normalized === domain || normalized.endsWith(`.${domain}`)) {
+        return value;
+      }
+    }
+  }
+  if (cache.contains) {
+    for (const [fragment, value] of cache.contains) {
+      if (normalized.includes(fragment)) {
+        return value;
+      }
+    }
+  }
+  if (cache.regex) {
+    for (const [rx, value] of cache.regex) {
+      try {
+        if (rx.test(normalized)) return value;
+      } catch {
+        // ignore invalid regex evaluation
+      }
+    }
   }
   return "Neutral";
 }

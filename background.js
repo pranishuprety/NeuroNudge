@@ -28,7 +28,8 @@ const GOAL_STATUS_STATES = {
   AT_RISK: "AT_RISK",
   FAILING: "FAILING"
 };
-let ruleCache = { exact: new Map(), regex: [] };
+let ruleCache = { exact: new Map(), domains: new Map(), contains: [], regex: [] };
+const BLOCKED_HOSTS_KEY = "blockedDistractingHosts";
 
 
 let flowState = { active: false, startAt: 0 };
@@ -58,6 +59,8 @@ let lastTrackedHost = null;
 let rulesConfig = { ...DEFAULT_RULES };
 let kpmMinuteBucket = 0;
 let kpmMinuteTs = null;
+let blockedDistractingHosts = new Set();
+let siteLimits = new Map();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.notifications.create({
@@ -79,13 +82,25 @@ bootstrap();
 async function bootstrap() {
   chrome.idle.setDetectionInterval(IDLE_DETECTION_INTERVAL_SECONDS);
 
-  const [{ privacyMode: storedPrivacy = false }, summaryStore, storedState] = await Promise.all([
-    chrome.storage.local.get("privacyMode"),
+  const [
+    {
+      privacyMode: storedPrivacy = false,
+      [BLOCKED_HOSTS_KEY]: storedBlockedHosts = []
+    },
+    summaryStore,
+    storedState
+  ] = await Promise.all([
+    chrome.storage.local.get(["privacyMode", BLOCKED_HOSTS_KEY]),
     getNormalizedSummary(),
     chrome.storage.local.get("focusState")
   ]);
 
   privacyMode = storedPrivacy;
+  if (Array.isArray(storedBlockedHosts)) {
+    blockedDistractingHosts = new Set(
+      storedBlockedHosts.filter((entry) => typeof entry === "string" && entry)
+    );
+  }
   lastFocusState = storedState.focusState || null;
   await chrome.storage.local.set({ [SUMMARY_KEY]: summaryStore });
   await seedTimeLogStorage();
@@ -93,6 +108,7 @@ async function bootstrap() {
   await hydrateTimeEngine();
   await loadRules();
   await loadRulesCache();
+  await loadSiteLimits();
   await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
 
   const initialIdleState = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
@@ -164,6 +180,18 @@ async function bootstrap() {
     if (changes.categorizationRules) {
       loadRulesCache().catch((error) => console.warn("Rule cache refresh failed", error));
     }
+    if (changes.rules) {
+      loadRules().catch((error) => console.warn("Rules refresh failed", error));
+      const prevLimit = Number(changes.rules.oldValue?.distractingLimitMinutes);
+      const nextLimit = Number(changes.rules.newValue?.distractingLimitMinutes);
+      if (Number.isFinite(prevLimit) && Number.isFinite(nextLimit) && prevLimit !== nextLimit) {
+        clearBlockedHosts().catch((error) => console.warn("Blocked hosts reset failed", error));
+      }
+    }
+    if (changes.distractingSiteLimits) {
+      loadSiteLimits().catch((error) => console.warn("Site limit cache refresh failed", error));
+      clearBlockedHosts().catch((error) => console.warn("Blocked hosts reset failed", error));
+    }
   });
 
   chrome.alarms.create("neuro-nudge-eval", {
@@ -203,6 +231,11 @@ async function bootstrap() {
         .then((summary) => sendResponse({ summary }))
         .catch((error) => sendResponse({ error: error.message }));
       return true;
+    }
+    if (message?.type === "extension:reset") {
+      blockedDistractingHosts.clear();
+      persistBlockedHosts().catch((error) => console.warn("Blocked host reset failed", error));
+      return false;
     }
     return false;
   });
@@ -276,6 +309,10 @@ async function refreshActiveTab() {
   }
   lastTrackedHost = active.host || null;
   lastActiveTab = active;
+  if (lastActiveTab.host && blockedDistractingHosts.has(lastActiveTab.host)) {
+    await enforceBlockedHost(lastActiveTab, "blocked");
+    return;
+  }
   try {
     await maybeEnforceDistractingLimit(active);
   } catch (error) {
@@ -305,21 +342,34 @@ async function hydrateTimeEngine() {
 async function loadRulesCache() {
   const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
   const exact = new Map();
+  const domains = new Map();
+  const contains = [];
   const regex = [];
+
   for (const key of Object.keys(categorizationRules)) {
-    const value = categorizationRules[key];
-    if (!key || typeof value !== "string") continue;
-    if (/[*.+?^${}()|[\]\\]/.test(key)) {
-      try {
-        regex.push([new RegExp(key, "i"), value]);
-      } catch {
-        // ignore invalid regex rule
-      }
-    } else {
-      exact.set(key.toLowerCase(), value);
+    const focusClass = categorizationRules[key];
+    if (typeof focusClass !== "string") continue;
+    const parsed = parseRuleKey(key);
+    if (!parsed) continue;
+    switch (parsed.type) {
+      case "regex":
+        regex.push([parsed.value, focusClass.trim()]);
+        break;
+      case "contains":
+        contains.push([parsed.value, focusClass.trim()]);
+        break;
+      case "exact":
+        exact.set(parsed.value, focusClass.trim());
+        break;
+      case "domain":
+        domains.set(parsed.value, focusClass.trim());
+        break;
+      default:
+        break;
     }
   }
-  ruleCache = { exact, regex };
+
+  ruleCache = { exact, domains, contains, regex };
 }
 
 async function loadRules() {
@@ -327,18 +377,136 @@ async function loadRules() {
   rulesConfig = { ...DEFAULT_RULES, ...(rules || {}) };
 }
 
+async function loadSiteLimits() {
+  const { distractingSiteLimits = {} } = await chrome.storage.local.get("distractingSiteLimits");
+  const map = new Map();
+  for (const [key, value] of Object.entries(distractingSiteLimits)) {
+    const normalized = normalizeHostKey(key);
+    const seconds = Number(value);
+    if (!normalized || !Number.isFinite(seconds) || seconds <= 0) continue;
+    map.set(normalized, seconds);
+  }
+  siteLimits = map;
+}
+
+async function persistBlockedHosts() {
+  await chrome.storage.local.set({
+    [BLOCKED_HOSTS_KEY]: Array.from(blockedDistractingHosts)
+  });
+}
+
+async function clearBlockedHosts() {
+  if (blockedDistractingHosts.size === 0) return;
+  blockedDistractingHosts.clear();
+  await persistBlockedHosts();
+}
+
+function parseRuleKey(rawKey) {
+  if (!rawKey || typeof rawKey !== "string") return null;
+  let base = rawKey.trim();
+  const colonIndex = base.indexOf(":");
+  if (colonIndex !== -1) {
+    base = base.slice(0, colonIndex).trim();
+  }
+  if (!base) return null;
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      const parsed = new URL(base);
+      base = parsed.hostname || parsed.host || base;
+    } catch {
+      base = base.replace(/^https?:\/\//i, "");
+    }
+  }
+  base = base.replace(/^www\./i, "");
+  base = base.replace(/\/.*$/, "");
+  base = base.trim();
+  if (!base) return null;
+  const regexSpecial = /[*^$+?()[\]{}|\\]/;
+  if (regexSpecial.test(base)) {
+    try {
+      return { type: "regex", value: new RegExp(base, "i") };
+    } catch {
+      return null;
+    }
+  }
+  const lowered = base.toLowerCase();
+  if (lowered.includes(":") && !lowered.includes("@")) {
+    return { type: "exact", value: lowered };
+  }
+  if (lowered.includes(".")) {
+    return { type: "domain", value: lowered };
+  }
+  return { type: "contains", value: lowered };
+}
+
 function classifyHost(host) {
   if (!host) return "Neutral";
-  const lookup = host.toLowerCase();
-  if (ruleCache.exact.has(lookup)) return ruleCache.exact.get(lookup);
-  for (const [rx, value] of ruleCache.regex) {
-    if (rx.test(host)) return value;
+  const normalized = host.toLowerCase();
+
+  if (ruleCache.exact?.has(normalized)) {
+    return ruleCache.exact.get(normalized);
+  }
+
+  if (ruleCache.domains) {
+    for (const [domain, value] of ruleCache.domains.entries()) {
+      if (normalized === domain || normalized.endsWith(`.${domain}`)) {
+        return value;
+      }
+    }
+  }
+
+  if (ruleCache.contains) {
+    for (const [fragment, value] of ruleCache.contains) {
+      if (normalized.includes(fragment)) {
+        return value;
+      }
+    }
+  }
+
+  if (ruleCache.regex) {
+    for (const [rx, value] of ruleCache.regex) {
+      try {
+        if (rx.test(normalized)) return value;
+      } catch {
+        // ignore bad regex
+      }
+    }
   }
   return "Neutral";
 }
 
 function isDistractingHost(host) {
   return classifyHost(host).startsWith("Distracting");
+}
+
+function normalizeHostKey(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  let base = raw.trim();
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      const parsed = new URL(base);
+      base = parsed.hostname || parsed.host || base;
+    } catch {
+      base = base.replace(/^https?:\/\//i, "");
+    }
+  }
+  base = base.replace(/^www\./i, "");
+  base = base.replace(/\/.*$/, "");
+  base = base.trim().toLowerCase();
+  return base;
+}
+
+function getSiteLimitSeconds(host) {
+  if (!host) return null;
+  const normalized = normalizeHostKey(host);
+  if (!normalized) return null;
+  if (siteLimits.has(normalized)) return siteLimits.get(normalized);
+  for (const [limitHost, seconds] of siteLimits.entries()) {
+    if (normalized === limitHost || normalized.endsWith(`.${limitHost}`)) {
+      return seconds;
+    }
+  }
+  return null;
 }
 
 async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = true, forceLog = false } = {}) {
@@ -536,32 +704,120 @@ async function markFlow(kind, timestamp, startAt = 0) {
 
 async function maybeEnforceDistractingLimit(tab) {
   if (!tab || privacyMode) return;
-  const limitMinutes = Number(rulesConfig.distractingLimitMinutes);
-  if (!Number.isFinite(limitMinutes) || limitMinutes <= 0) return;
   const targetUrl = chrome.runtime.getURL("motivator.html");
   const tabUrl = tab.url || "";
   if (tabUrl.startsWith(targetUrl) || tabUrl.startsWith("chrome-extension://")) return;
   const host = tab.host || normalizeHost(tabUrl);
   if (!host) return;
-  if (!isDistractingHost(host)) return;
+
+  const limits = [];
+  const hostIsDistracting = isDistractingHost(host);
+  const globalLimitMinutes = Number(rulesConfig.distractingLimitMinutes);
+  if (hostIsDistracting && Number.isFinite(globalLimitMinutes) && globalLimitMinutes > 0) {
+    limits.push({ seconds: globalLimitMinutes * 60, reason: "global" });
+  }
+  const siteLimitSeconds = getSiteLimitSeconds(host);
+  if (Number.isFinite(siteLimitSeconds) && siteLimitSeconds > 0) {
+    limits.push({ seconds: siteLimitSeconds, reason: "site" });
+  }
+  if (!limits.length) return;
+
   const today = todayKey();
   const { dailyTimeLog = {} } = await chrome.storage.local.get("dailyTimeLog");
-  const hostSeconds = Math.max(
-    0,
-    Math.round(dailyTimeLog[today]?.[host]?.seconds || 0)
-  );
-  if (hostSeconds < limitMinutes * 60) return;
+  if (!dailyTimeLog[today]) dailyTimeLog[today] = {};
+  const entry = dailyTimeLog[today][host] || { seconds: 0, alert: null, limitHit: null };
+  if (typeof entry.limitHit === "undefined") entry.limitHit = null;
+  const hostSeconds = Math.max(0, Math.round(entry.seconds || 0));
 
-  const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
-  if (!tabId) return;
-  try {
-    await chrome.tabs.update(tabId, { url: targetUrl });
-    await appendNudge({
-      message: `Motivation break: time on ${host} hit ${limitMinutes} min.`,
-      state: "limit"
-    });
-  } catch (error) {
-    console.warn("Motivation redirect failed", error);
+  const sortedLimits = limits
+    .map((limit) => ({ ...limit, remaining: limit.seconds - hostSeconds }))
+    .sort((a, b) => a.seconds - b.seconds);
+
+  const triggered = sortedLimits.find((limit) => limit.remaining <= 0);
+  if (triggered) {
+    const hitKey = `limit-hit-${triggered.reason}`;
+    const alreadyHit = entry.alert === hitKey;
+    entry.alert = hitKey;
+    entry.limitHit = triggered.reason;
+    dailyTimeLog[today][host] = entry;
+    await chrome.storage.local.set({ dailyTimeLog });
+
+    if (!blockedDistractingHosts.has(host)) {
+      blockedDistractingHosts.add(host);
+      await persistBlockedHosts();
+    }
+
+    if (!alreadyHit) {
+      const limitMinutes = Math.round(triggered.seconds / 60);
+      const message =
+        triggered.reason === "site"
+          ? `Focus reset: ${host} reached its ${limitMinutes}m limit.`
+          : `Focus reset: time on ${host} hit your limit.`;
+      await appendNudge({
+        message,
+        state: "limit",
+        meta: { host, limitMinutes, reason: triggered.reason }
+      });
+      try {
+        await chrome.notifications.create(`limit-hit-${triggered.reason}-${host}`, {
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: "Distracting limit reached",
+          message,
+          priority: 2
+        });
+      } catch (error) {
+        console.warn("Limit hit notification failed", error);
+      }
+    }
+
+    await enforceBlockedHost(tab);
+    return;
+  }
+
+  if (blockedDistractingHosts.has(host)) {
+    blockedDistractingHosts.delete(host);
+    await persistBlockedHosts();
+  }
+
+  const warning = sortedLimits
+    .filter((limit) => limit.remaining > 0 && limit.remaining <= 30)
+    .sort((a, b) => a.remaining - b.remaining)[0];
+
+  if (warning) {
+    const warnKey = `limit-warning-${warning.reason}`;
+    if (entry.alert !== warnKey) {
+      entry.alert = warnKey;
+      entry.limitHit = null;
+      dailyTimeLog[today][host] = entry;
+      await chrome.storage.local.set({ dailyTimeLog });
+      const secondsRemaining = Math.ceil(warning.remaining);
+      const message =
+        warning.reason === "site"
+          ? `${secondsRemaining}s left before ${host}'s limit.`
+          : `Only ${secondsRemaining}s left on ${host}.`;
+      await appendNudge({
+        message,
+        state: "limit_warning",
+        meta: { host, remaining: secondsRemaining, reason: warning.reason }
+      });
+      try {
+        await chrome.notifications.create(`limit-warning-${warning.reason}-${host}`, {
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: "Almost at your distracting limit",
+          message,
+          priority: 1
+        });
+      } catch (error) {
+        console.warn("Limit warning notification failed", error);
+      }
+    }
+  } else if (entry.alert && entry.alert.startsWith("limit-warning")) {
+    entry.alert = null;
+    entry.limitHit = null;
+    dailyTimeLog[today][host] = entry;
+    await chrome.storage.local.set({ dailyTimeLog });
   }
 }
 
@@ -582,15 +838,30 @@ async function logTimeForHost(host, addSeconds) {
     }
     await chrome.storage.local.set({ dailySummary });
     engineMeta.lastPersistedDay = day;
+    await clearBlockedHosts().catch((error) => console.warn("Blocked hosts day reset failed", error));
   }
   if (!dailyTimeLog[day]) dailyTimeLog[day] = {};
-  const entry = dailyTimeLog[day][host] || { seconds: 0, alert: null };
+  const entry = dailyTimeLog[day][host] || { seconds: 0, alert: null, limitHit: null };
+  if (typeof entry.limitHit === "undefined") entry.limitHit = null;
   entry.seconds += Math.max(1, Math.round(addSeconds));
   dailyTimeLog[day][host] = entry;
   await chrome.storage.local.set({ dailyTimeLog, engineMeta });
   await updateSummary((summary) => {
     summary.domainStats[host] = (summary.domainStats[host] || 0) + Math.max(1, Math.round(addSeconds));
   });
+}
+
+async function enforceBlockedHost(tab) {
+  const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
+  if (!tabId) return;
+  const host = tab.host || normalizeHost(tab.url || "");
+  if (!host || !blockedDistractingHosts.has(host)) return;
+  const targetUrl = chrome.runtime.getURL("motivator.html");
+  try {
+    await chrome.tabs.update(tabId, { url: targetUrl });
+  } catch (error) {
+    console.warn("Blocked host redirect failed", error);
+  }
 }
 
 function pruneOldDays(log, currentDayStr) {
@@ -830,6 +1101,9 @@ async function computeGoalStatus(summary, { day = todayKey(), skipPersist = fals
   const classes = safeSummary.classes || {};
   const productiveSec = Math.max(0, Math.round(classes.Productive || 0));
   const distractingSec = Math.max(0, Math.round(classes.Distracting || 0));
+  const { dailyTimeLog = {} } = await chrome.storage.local.get("dailyTimeLog");
+  const dayLog = dailyTimeLog[day] || {};
+  const siteLimitBreached = Object.values(dayLog).some((entry) => entry?.limitHit);
 
   const goals = await getGoals();
   const dailyGoals = goals.daily || {};
@@ -853,6 +1127,10 @@ async function computeGoalStatus(summary, { day = todayKey(), skipPersist = fals
     distractingSec,
     day
   });
+
+  if (siteLimitBreached) {
+    state = GOAL_STATUS_STATES.FAILING;
+  }
 
   if (state !== GOAL_STATUS_STATES.PASSING && flowTarget > 0 && flowDone >= flowTarget && pctProductive >= 0.75) {
     state = GOAL_STATUS_STATES.AT_RISK;
