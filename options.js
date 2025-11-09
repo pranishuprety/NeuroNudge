@@ -55,13 +55,15 @@ async function init() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const breakingMinutes = Number(breakInput.value);
+  const limitMinutes = Number(distractingLimitInput?.value);
   const payload = {
-    breakInterval: Number(breakInput.value) || DEFAULT_RULES.breakInterval,
+    breakInterval: Number.isFinite(breakingMinutes) && breakingMinutes > 0 ? breakingMinutes : DEFAULT_RULES.breakInterval,
     driftSensitivity: driftSelect.value,
     maxDailyHours: Number(maxDailyInput.value) || DEFAULT_RULES.maxDailyHours,
     voice: voiceCheckbox.checked,
     distractingLimitMinutes:
-      Number(distractingLimitInput?.value) || DEFAULT_RULES.distractingLimitMinutes
+      Number.isFinite(limitMinutes) && limitMinutes >= 0 ? limitMinutes : DEFAULT_RULES.distractingLimitMinutes
   };
   const goalsPayload = normalizeGoals({
     daily: {
