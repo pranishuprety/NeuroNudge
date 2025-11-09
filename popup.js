@@ -403,6 +403,7 @@ function summarizeKpm(kpmLog = {}, kpmLive = {}, privacyEnabled = false) {
   };
 }
 
+
 function todayKey() {
   return new Date().toISOString().split("T")[0];
 }

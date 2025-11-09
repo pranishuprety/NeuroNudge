@@ -367,6 +367,46 @@
       padding: 6px 10px;
     }
 
+    .parent-mode-section {
+      display: grid;
+      gap: 16px;
+    }
+
+    .parent-status {
+      min-height: 18px;
+      font-size: 13px;
+      color: var(--text-soft);
+      letter-spacing: 0.02em;
+    }
+
+    .parent-status[data-state="success"] {
+      color: #34d399;
+    }
+
+    .parent-status[data-state="error"] {
+      color: #f87171;
+    }
+
+    .parent-limit-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 0.9fr) minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .limit-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.16);
+      color: var(--accent);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
     .toast {
       font-size: 13px;
       color: var(--accent);
@@ -400,6 +440,10 @@
       .limit-actions {
         flex-direction: column;
         align-items: stretch;
+      }
+
+      .parent-limit-grid {
+        grid-template-columns: 1fr;
       }
 
       button {
@@ -519,6 +563,59 @@
           </div>
           <ul id="bannedList" class="limit-list"></ul>
         </div>
+
+        <div class="divider"></div>
+
+        <section class="parent-mode-section" aria-labelledby="parentModeHeading">
+          <div class="section-heading" style="margin-bottom: 8px;">
+            <h2 id="parentModeHeading">Parent Mode</h2>
+            <p class="muted">Keep curious browsing on track. Configure blocking and time limits locally.</p>
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="parentModeEnabled" />
+            <span>Enable Parent Mode</span>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="parentNotifyToggle" />
+            <span>Send iMessage alerts when a rule triggers</span>
+          </label>
+          <div class="limit-grid" style="margin-top:-4px;">
+            <input id="parentContactNumber" placeholder="+15555555555" disabled />
+            <div class="limit-actions" style="justify-content:flex-end;">
+              <span class="muted" style="font-size:12px;">Enter a parent’s number</span>
+            </div>
+          </div>
+          <div id="parentModeStatus" class="parent-status" aria-live="polite"></div>
+
+          <div class="divider"></div>
+
+          <div>
+            <strong class="muted" style="text-transform: uppercase; letter-spacing: 0.08em;">Blocked sites</strong>
+            <div class="limit-grid" style="margin-top: 8px;">
+              <input id="parentBlockedHost" placeholder="e.g. youtube.com" />
+              <div class="limit-actions">
+                <button type="button" id="addParentBlocked" class="primary">Add Block</button>
+              </div>
+            </div>
+            <ul id="parentBlockedList" class="limit-list"></ul>
+          </div>
+
+          <div class="divider"></div>
+
+          <div>
+            <strong class="muted" style="text-transform: uppercase; letter-spacing: 0.08em;">Time limits</strong>
+            <div class="parent-limit-grid" style="margin-top: 8px;">
+              <input id="parentLimitHost" placeholder="e.g. roblox.com" />
+              <input id="parentLimitMinutes" type="number" min="1" step="1" placeholder="Minutes" />
+              <select id="parentLimitType">
+                <option value="daily">Daily limit</option>
+                <option value="session">Session limit</option>
+              </select>
+              <button type="button" id="addParentLimit" class="primary">Add Limit</button>
+            </div>
+            <ul id="parentLimitList" class="limit-list"></ul>
+          </div>
+        </section>
 
         <div class="divider"></div>
 

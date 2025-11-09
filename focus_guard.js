@@ -1,9 +1,15 @@
 const params = new URLSearchParams(window.location.search || "");
-const reason = params.get("reason") === "banned" ? "banned" : "limit";
+const rawReason = params.get("reason") || "";
+const ALLOWED_REASONS = new Set(["banned", "limit", "parent-block", "parent-limit"]);
+const reason = ALLOWED_REASONS.has(rawReason) ? rawReason : "limit";
 const host = params.get("host") || "";
 const limitMinutesRaw = Number.parseInt(params.get("limitMinutes") || "", 10);
 const limitMinutes = Number.isFinite(limitMinutesRaw) && limitMinutesRaw > 0 ? limitMinutesRaw : null;
 const limitKind = params.get("limitKind") || null;
+const parentType = params.get("parentType") || "";
+const ruleHostParam = params.get("ruleHost") || "";
+const usedMinutesRaw = Number.parseInt(params.get("usedMinutes") || "", 10);
+const usedMinutes = Number.isFinite(usedMinutesRaw) && usedMinutesRaw >= 0 ? usedMinutesRaw : null;
 
 const headingEl = document.getElementById("heading");
 const ledeEl = document.getElementById("lede");
@@ -34,6 +40,37 @@ function describeLimit() {
     if (host) return `${formatHostLabel(host)} is on your banned list.`;
     return "This site is on your banned list.";
   }
+  if (reason === "parent-block") {
+    const label = formatHostLabel(ruleHostParam || host);
+    if (label) return `Parent Mode currently blocks ${label}.`;
+    return "Parent Mode blocked this site.";
+  }
+  if (reason === "parent-limit") {
+    const label = formatHostLabel(ruleHostParam || host);
+    const limitLabel = limitMinutes ? `${limitMinutes} minute` + (limitMinutes === 1 ? "" : "s") : "the set";
+    if (parentType === "daily") {
+      if (label && usedMinutes !== null && limitMinutes) {
+        return `${label} hit its Parent Mode daily cap (${usedMinutes} of ${limitMinutes} minutes).`;
+      }
+      if (label && limitMinutes) {
+        return `${label} reached its Parent Mode daily limit of ${limitLabel}.`;
+      }
+      if (label) return `Parent Mode daily time for ${label} is used up.`;
+      return "Parent Mode daily limit reached.";
+    }
+    if (parentType === "session") {
+      if (label && usedMinutes !== null && limitMinutes) {
+        return `${label} reached the Parent Mode session limit (${usedMinutes} of ${limitMinutes} minutes).`;
+      }
+      if (label && limitMinutes) {
+        return `${label} hit its Parent Mode session limit of ${limitLabel}.`;
+      }
+      if (label) return `Parent Mode session time for ${label} just ran out.`;
+      return "Parent Mode session limit reached.";
+    }
+    if (label) return `Parent Mode limit reached for ${label}.`;
+    return "Parent Mode limit reached.";
+  }
   if (limitMinutes && limitKind === "site" && host) {
     return `${formatHostLabel(host)} has reached its ${limitMinutes} minute limit.`;
   }
@@ -54,11 +91,23 @@ function applyCopy() {
     headingEl.textContent = "Choose the Better Path";
     ledeEl.textContent = `${describeLimit()} Let this quote refocus your energy.`;
     settingsBtn.hidden = false;
-  } else {
-    headingEl.textContent = "Time's Up for This Detour";
-    ledeEl.textContent = `${describeLimit()} Take a breath, soak in something uplifting, then jump back into your priorities.`;
-    settingsBtn.hidden = false;
+    return;
   }
+  if (reason === "parent-block") {
+    headingEl.textContent = "Parent Mode Locked This Site";
+    ledeEl.textContent = `${describeLimit()} Check in with your parent or adjust the Parent Mode rules together.`;
+    settingsBtn.hidden = false;
+    return;
+  }
+  if (reason === "parent-limit") {
+    headingEl.textContent = "Parent Mode Limit Reached";
+    ledeEl.textContent = `${describeLimit()} Take a mindful pause before deciding on the next activity.`;
+    settingsBtn.hidden = false;
+    return;
+  }
+  headingEl.textContent = "Time's Up for This Detour";
+  ledeEl.textContent = `${describeLimit()} Take a breath, soak in something uplifting, then jump back into your priorities.`;
+  settingsBtn.hidden = false;
 }
 
 function scheduleAutoRefresh() {

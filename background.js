@@ -5,6 +5,8 @@
 
 import { SUMMARY_KEY, IDLE_RESET_MS, getCurrentState, getNormalizedSummary } from "./stateEngine.js";
 import { getAINudge } from "./aiNudge.js";
+import { ParentModeManager, PARENT_MODE_CONFIG_KEY, PARENT_MODE_SESSION_KEY } from "./parentMode.js";
+import { sendParentAlert } from "./photonBridge.js";
 
 const NUDGE_INTERVAL_MINUTES = 10;
 const IDLE_DETECTION_INTERVAL_SECONDS = 60;
@@ -31,6 +33,10 @@ const GOAL_STATUS_STATES = {
 let ruleCache = { exact: new Map(), domains: new Map(), contains: [], regex: [] };
 const BLOCKED_HOSTS_KEY = "blockedDistractingHosts";
 const BANNED_HOSTS_KEY = "bannedHosts";
+
+const parentMode = new ParentModeManager();
+const parentAlertHistory = new Map();
+const PARENT_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 
 let flowState = { active: false, startAt: 0 };
 let lastBreakNudgeAt = 0;
@@ -125,6 +131,11 @@ async function bootstrap() {
   await loadRules();
   await loadRulesCache();
   await loadSiteLimits();
+  try {
+    await parentMode.load();
+  } catch (error) {
+    console.warn("Parent mode bootstrap failed", error);
+  }
   await updateLiveKpm(kpmMinuteTs, kpmMinuteBucket);
 
   const initialIdleState = await chrome.idle.queryState(IDLE_DETECTION_INTERVAL_SECONDS);
@@ -148,63 +159,82 @@ async function bootstrap() {
   });
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url) {
-      const host = normalizeHost(changeInfo.url);
-      if (host && isHostBanned(host)) {
-        enforceBannedHost({ tabId, host, url: changeInfo.url }, { host }).catch((error) =>
-          console.warn("Banned host update enforcement failed", error)
-        );
-        return;
+    void (async () => {
+      if (changeInfo.url) {
+        const host = normalizeHost(changeInfo.url);
+        if (host) {
+          const parentEnforced = await maybeEnforceParentMode({ tabId, host, url: changeInfo.url });
+          if (parentEnforced) return;
+          if (isHostBanned(host)) {
+            await enforceBannedHost({ tabId, host, url: changeInfo.url }, { host });
+            return;
+          }
+          if (blockedDistractingHosts.has(host)) {
+            await enforceBlockedHost({ tabId, host, url: changeInfo.url }, { host });
+            return;
+          }
+        }
       }
-      if (host && blockedDistractingHosts.has(host)) {
-        enforceBlockedHost({ tabId, host, url: changeInfo.url }, { host }).catch((error) =>
-          console.warn("Blocked host update enforcement failed", error)
-        );
-        return;
+      if (tab?.active && changeInfo.url) {
+        try {
+          await handleTick("tab update", { refreshActive: false });
+        } catch (error) {
+          console.warn("Tick on tab update failed", error);
+        }
+        try {
+          await refreshActiveTab();
+        } catch (error) {
+          console.warn("Tab update error", error);
+        }
       }
-    }
-    if (tab?.active && changeInfo.url) {
-      handleTick("tab update", { refreshActive: false })
-        .catch((error) => console.warn("Tick on tab update failed", error))
-        .finally(() => refreshActiveTab().catch((error) => console.warn("Tab update error", error)));
-    }
+    })().catch((error) => console.warn("Tab update handler failed", error));
   });
 
   chrome.tabs.onCreated.addListener((tab) => {
-    const candidateUrl = tab?.pendingUrl || tab?.url || "";
-    if (candidateUrl) {
-      const host = normalizeHost(candidateUrl);
-      if (host && isHostBanned(host)) {
-        enforceBannedHost({ tabId: tab.id, host, url: candidateUrl }, { host }).catch((error) =>
-          console.warn("Banned host create enforcement failed", error)
-        );
-        return;
+    void (async () => {
+      const candidateUrl = tab?.pendingUrl || tab?.url || "";
+      if (candidateUrl) {
+        const host = normalizeHost(candidateUrl);
+        if (host) {
+          const parentEnforced = await maybeEnforceParentMode({ tabId: tab.id, host, url: candidateUrl });
+          if (parentEnforced) return;
+          if (isHostBanned(host)) {
+            await enforceBannedHost({ tabId: tab.id, host, url: candidateUrl }, { host });
+            return;
+          }
+          if (blockedDistractingHosts.has(host)) {
+            await enforceBlockedHost({ tabId: tab.id, host, url: candidateUrl }, { host });
+            return;
+          }
+        }
       }
-      if (host && blockedDistractingHosts.has(host)) {
-        enforceBlockedHost({ tabId: tab.id, host, url: candidateUrl }, { host }).catch((error) =>
-          console.warn("Blocked host create enforcement failed", error)
-        );
-        return;
+      try {
+        await handleNewTab(tab);
+      } catch (error) {
+        console.warn("Adaptive tab error", error);
       }
-    }
-    handleNewTab(tab).catch((error) => console.warn("Adaptive tab error", error));
+    })().catch((error) => console.warn("Tab create handler failed", error));
   });
 
   chrome.webNavigation.onCommitted.addListener((details) => {
-    if (details.frameId !== 0) return;
-    const host = normalizeHost(details.url);
-    if (!host) return;
-    if (isHostBanned(host)) {
-      enforceBannedHost({ tabId: details.tabId, host, url: details.url }, { host }).catch((error) =>
-        console.warn("Banned host navigation enforcement failed", error)
-      );
-      return;
-    }
-    if (blockedDistractingHosts.has(host)) {
-      enforceBlockedHost({ tabId: details.tabId, host, url: details.url }, { host }).catch((error) =>
-        console.warn("Blocked host navigation enforcement failed", error)
-      );
-    }
+    void (async () => {
+      if (details.frameId !== 0) return;
+      const host = normalizeHost(details.url);
+      if (!host) return;
+      const parentEnforced = await maybeEnforceParentMode({
+        tabId: details.tabId,
+        host,
+        url: details.url
+      });
+      if (parentEnforced) return;
+      if (isHostBanned(host)) {
+        await enforceBannedHost({ tabId: details.tabId, host, url: details.url }, { host });
+        return;
+      }
+      if (blockedDistractingHosts.has(host)) {
+        await enforceBlockedHost({ tabId: details.tabId, host, url: details.url }, { host });
+      }
+    })().catch((error) => console.warn("Navigation enforcement failed", error));
   });
 
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -260,6 +290,35 @@ async function bootstrap() {
       loadBannedHosts()
         .then(() => refreshActiveTab().catch((error) => console.warn("Banned host refresh failed", error)))
         .catch((error) => console.warn("Banned host cache refresh failed", error));
+    }
+    if (changes[PARENT_MODE_CONFIG_KEY]) {
+      try {
+        parentMode.applyConfig(changes[PARENT_MODE_CONFIG_KEY].newValue);
+        const nextEnabled = Boolean(changes[PARENT_MODE_CONFIG_KEY].newValue?.enabled);
+        const prevEnabled = Boolean(changes[PARENT_MODE_CONFIG_KEY].oldValue?.enabled);
+        if (nextEnabled && !prevEnabled) {
+          refreshActiveTab().catch((error) => console.warn("Parent mode activation refresh failed", error));
+        }
+        const newNotify = Boolean(changes[PARENT_MODE_CONFIG_KEY].newValue?.notify);
+        const oldNotify = Boolean(changes[PARENT_MODE_CONFIG_KEY].oldValue?.notify);
+        const newContact = changes[PARENT_MODE_CONFIG_KEY].newValue?.contactNumber || "";
+        const oldContact = changes[PARENT_MODE_CONFIG_KEY].oldValue?.contactNumber || "";
+        if (!newNotify || newNotify !== oldNotify || newContact !== oldContact) {
+          parentAlertHistory.clear();
+        }
+      } catch (error) {
+        console.warn("Parent mode config refresh failed", error);
+      }
+    }
+    if (changes[PARENT_MODE_SESSION_KEY]) {
+      try {
+        parentMode.applySession(changes[PARENT_MODE_SESSION_KEY].newValue);
+      } catch (error) {
+        console.warn("Parent mode session refresh failed", error);
+      }
+    }
+    if (changes.dailyTimeLog) {
+      parentMode.invalidateDailyCache();
     }
   });
 
@@ -318,6 +377,72 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       blockedHostMeta.clear();
       persistBlockedHosts().catch((error) => console.warn("Blocked host reset failed", error));
       return false;
+    }
+    if (message?.type === "parentMode:snapshot") {
+      parentMode
+        .buildSnapshot(todayKey())
+        .then((snapshot) => sendResponse({ success: true, snapshot }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "parentMode:setEnabled") {
+      parentMode
+        .setEnabled(Boolean(message.enabled))
+        .then(() => sendResponse({ success: true }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "parentMode:addBlocked") {
+      parentMode
+        .addBlockedHost(message.host)
+        .then(() => sendResponse({ success: true }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "parentMode:removeBlocked") {
+      parentMode
+        .removeBlockedHost(message.host)
+        .then(() => sendResponse({ success: true }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "parentMode:addLimit") {
+      const limitMinutes =
+        Number.isFinite(Number(message.minutes)) && Number(message.minutes) > 0
+          ? Number(message.minutes)
+          : Number(message.limitMinutes);
+      const limitType =
+        typeof message.limitType === "string"
+          ? message.limitType
+          : typeof message.kind === "string"
+            ? message.kind
+            : typeof message.mode === "string"
+              ? message.mode
+              : "daily";
+      parentMode
+        .addLimit({
+          host: message.host,
+          minutes: limitMinutes,
+          type: limitType
+        })
+        .then(() => sendResponse({ success: true }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+    if (message?.type === "parentMode:removeLimit") {
+      const limitType =
+        typeof message.limitType === "string"
+          ? message.limitType
+          : typeof message.kind === "string"
+            ? message.kind
+            : typeof message.mode === "string"
+              ? message.mode
+              : "daily";
+      parentMode
+        .removeLimit({ host: message.host, type: limitType })
+        .then(() => sendResponse({ success: true }))
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
     }
     return false;
   });
@@ -391,6 +516,12 @@ async function refreshActiveTab() {
   }
   if (isHostBanned(active.host)) {
     await enforceBannedHost(active, { host: active.host });
+    lastTrackedHost = null;
+    lastActiveTab = null;
+    return;
+  }
+  const parentHit = await maybeEnforceParentMode(active);
+  if (parentHit) {
     lastTrackedHost = null;
     lastActiveTab = null;
     return;
@@ -670,7 +801,10 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     await updateDailySummary();
     await maybeRunBreakCoach();
     await updateFlowWindow();
-    await maybeEnforceDistractingLimit(lastActiveTab);
+    const parentBlocked = await maybeEnforceParentMode(lastActiveTab);
+    if (!parentBlocked) {
+      await maybeEnforceDistractingLimit(lastActiveTab);
+    }
   } catch (error) {
     console.warn("Post-tick enrichments failed", error);
   }
@@ -814,6 +948,54 @@ async function markFlow(kind, timestamp, startAt = 0) {
   const durationMs = Math.max(0, timestamp - startAt);
   const updated = [{ type: "end", at: timestamp, durationMs }, ...flowLog].slice(0, 40);
   await chrome.storage.local.set({ flowLog: updated });
+}
+
+async function maybeEnforceParentMode(tab) {
+  if (!tab || privacyMode) return false;
+  if (!parentMode.isEnabled()) return false;
+  const tabUrl = tab.url || "";
+  const guardUrl = chrome.runtime.getURL("focus_guard.html");
+  if (tabUrl && (tabUrl.startsWith(guardUrl) || tabUrl.startsWith("chrome-extension://"))) {
+    return false;
+  }
+  const host = tab.host || normalizeHost(tabUrl);
+  if (!host) return false;
+  try {
+    const outcome = await parentMode.evaluateHostAccess(host, todayKey(), Date.now());
+    if (!outcome?.enforced) return false;
+    if (outcome.action === "block") {
+      await enforceParentGuard(tab, {
+        host,
+        ruleHost: outcome.ruleHost,
+        reason: "parent-block"
+      });
+      return true;
+    }
+    if (outcome.action === "limit") {
+      const limitMinutes =
+        Number.isFinite(outcome.limit?.minutes) && outcome.limit?.minutes > 0
+          ? outcome.limit.minutes
+          : Number.isFinite(outcome.limit?.seconds)
+            ? Math.round(outcome.limit.seconds / 60)
+            : null;
+      const usedMinutes =
+        Number.isFinite(outcome.usedSeconds) && outcome.usedSeconds > 0
+          ? Math.max(0, Math.ceil(outcome.usedSeconds / 60))
+          : null;
+      await enforceParentGuard(tab, {
+        host,
+        ruleHost: outcome.ruleHost,
+        reason: "parent-limit",
+        parentType: outcome.reason,
+        limitMinutes,
+        usedMinutes
+      });
+      return true;
+    }
+  } catch (error) {
+    console.warn("Parent mode enforcement failed", error);
+  }
+  return false;
 }
 
 async function maybeEnforceDistractingLimit(tab) {
@@ -970,20 +1152,32 @@ async function logTimeForHost(host, addSeconds) {
     }
     await chrome.storage.local.set({ dailySummary });
     engineMeta.lastPersistedDay = day;
+    parentMode.handleDayRollover(day);
     await clearBlockedHosts().catch((error) => console.warn("Blocked hosts day reset failed", error));
   }
   if (!dailyTimeLog[day]) dailyTimeLog[day] = {};
   const entry = dailyTimeLog[day][host] || { seconds: 0, alert: null, limitHit: null };
   if (typeof entry.limitHit === "undefined") entry.limitHit = null;
-  entry.seconds += Math.max(1, Math.round(addSeconds));
+  const incrementSeconds = Math.max(1, Math.round(addSeconds));
+  entry.seconds += incrementSeconds;
   dailyTimeLog[day][host] = entry;
   await chrome.storage.local.set({ dailyTimeLog, engineMeta });
+  parentMode.registerDailyIncrement(day, host, incrementSeconds);
+  parentMode.touchSessionUsage(host, incrementSeconds);
   await updateSummary((summary) => {
     summary.domainStats[host] = (summary.domainStats[host] || 0) + Math.max(1, Math.round(addSeconds));
   });
 }
 
-function buildFocusRedirectUrl({ reason, host, limitMinutes, limitKind } = {}) {
+function buildFocusRedirectUrl({
+  reason,
+  host,
+  limitMinutes,
+  limitKind,
+  parentType,
+  ruleHost,
+  usedMinutes
+} = {}) {
   const base = chrome.runtime.getURL("focus_guard.html");
   const params = new URLSearchParams();
   if (reason) params.set("reason", reason);
@@ -992,6 +1186,11 @@ function buildFocusRedirectUrl({ reason, host, limitMinutes, limitKind } = {}) {
     params.set("limitMinutes", String(Math.round(limitMinutes)));
   }
   if (limitKind) params.set("limitKind", limitKind);
+  if (parentType) params.set("parentType", parentType);
+  if (ruleHost) params.set("ruleHost", ruleHost);
+  if (Number.isFinite(usedMinutes) && usedMinutes >= 0) {
+    params.set("usedMinutes", String(Math.max(0, Math.round(usedMinutes))));
+  }
   const query = params.toString();
   return query ? `${base}?${query}` : base;
 }
@@ -1018,6 +1217,82 @@ async function enforceBlockedHost(tab, context = {}) {
     await chrome.tabs.update(tabId, { url: targetUrl });
   } catch (error) {
     console.warn("Blocked host redirect failed", error);
+  }
+}
+
+async function enforceParentGuard(tab, context = {}) {
+  const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
+  if (!tabId) return;
+  const host = context.host || tab.host || normalizeHost(tab.url || "");
+  if (!host) return;
+  const limitKind = context.limitKind;
+  const targetUrl = buildFocusRedirectUrl({
+    reason: context.reason || "parent-block",
+    host,
+    limitMinutes: context.limitMinutes,
+    limitKind,
+    parentType: context.parentType,
+    ruleHost: context.ruleHost,
+    usedMinutes: context.usedMinutes
+  });
+  lastActiveTab = null;
+  lastTrackedHost = null;
+  try {
+    await chrome.tabs.update(tabId, { url: targetUrl });
+  } catch (error) {
+    console.warn("Parent guard redirect failed", error);
+  }
+  void maybeNotifyParentAlert({
+    host,
+    reason: context.reason || "parent-block",
+    parentType: context.parentType || null,
+    limitMinutes: context.limitMinutes,
+    usedMinutes: context.usedMinutes,
+    ruleHost: context.ruleHost || host
+  });
+}
+
+function buildParentAlertMessage({ host, reason, parentType, limitMinutes, usedMinutes, ruleHost }) {
+  const displayHost = host || ruleHost || "a site";
+  if (reason === "parent-limit") {
+    const limitLabel =
+      parentType === "session"
+        ? "session limit"
+        : parentType === "daily"
+          ? "daily limit"
+          : "limit";
+    const limitText = Number.isFinite(limitMinutes) && limitMinutes > 0 ? `${limitMinutes} minute${limitMinutes === 1 ? "" : "s"}` : "configured time";
+    const usedText =
+      Number.isFinite(usedMinutes) && usedMinutes !== null
+        ? `${usedMinutes} minute${usedMinutes === 1 ? "" : "s"} used`
+        : "limit reached";
+    return `Parent Mode: ${displayHost} hit its ${limitLabel} (${limitText}, ${usedText}).`;
+  }
+  return `Parent Mode: ${displayHost} is currently blocked.`;
+}
+
+async function maybeNotifyParentAlert(context = {}) {
+  try {
+    const { notify, contactNumber } = parentMode.getNotificationSettings();
+    if (!notify || !contactNumber) return;
+    const key = `${context.reason || "parent-block"}|${context.parentType || "none"}|${context.host || context.ruleHost || "unknown"}`;
+    const now = Date.now();
+    for (const [storedKey, ts] of parentAlertHistory.entries()) {
+      if (now - ts > PARENT_ALERT_COOLDOWN_MS * 6) {
+        parentAlertHistory.delete(storedKey);
+      }
+    }
+    const lastSent = parentAlertHistory.get(key) || 0;
+    if (now - lastSent < PARENT_ALERT_COOLDOWN_MS) return;
+    const message = buildParentAlertMessage(context);
+    if (!message) return;
+    parentAlertHistory.set(key, now);
+    const result = await sendParentAlert(contactNumber, message);
+    if (!result.sent && result.error) {
+      console.warn("Parent alert send failed", result.error);
+    }
+  } catch (error) {
+    console.warn("Parent alert notification failed", error);
   }
 }
 
