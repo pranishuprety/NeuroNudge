@@ -86,9 +86,10 @@ const ruleListEl = document.getElementById("ruleList");
 addRuleBtn?.addEventListener("click", async () => {
   const key = (ruleKeyEl?.value || "").trim();
   const val = (ruleValueEl?.value || "Neutral").trim();
-  if (!key) return;
+  const normalizedKey = sanitizeRuleKeyInput(key);
+  if (!normalizedKey) return;
   const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
-  categorizationRules[key] = val;
+  categorizationRules[normalizedKey] = val;
   await chrome.storage.local.set({ categorizationRules });
   if (ruleKeyEl) ruleKeyEl.value = "";
   await renderRules();
@@ -96,7 +97,7 @@ addRuleBtn?.addEventListener("click", async () => {
 
 async function renderRules() {
   if (!ruleListEl) return;
-  const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
+  const categorizationRules = await ensureNormalizedRules();
   const entries = Object.entries(categorizationRules);
   if (entries.length === 0) {
     ruleListEl.innerHTML = `<li><em class="muted">No classification rules yet.</em></li>`;
@@ -126,6 +127,54 @@ function sanitize(value = "") {
   const div = document.createElement("div");
   div.textContent = value;
   return div.innerHTML;
+}
+
+function sanitizeRuleKeyInput(rawKey) {
+  if (!rawKey || typeof rawKey !== "string") return "";
+  let base = rawKey.trim();
+  const colonIndex = base.indexOf(":");
+  if (colonIndex !== -1) {
+    base = base.slice(0, colonIndex).trim();
+  }
+  if (!base) return "";
+  const regexSpecial = /[*^$+?()[\]{}|\\]/;
+  if (regexSpecial.test(base)) {
+    return base;
+  }
+  if (/^https?:\/\//i.test(base)) {
+    try {
+      const parsed = new URL(base);
+      base = parsed.hostname || parsed.host || base;
+    } catch {
+      base = base.replace(/^https?:\/\//i, "");
+    }
+  }
+  base = base.replace(/^www\./i, "");
+  base = base.replace(/\/.*$/, "");
+  base = base.trim();
+  return base.toLowerCase();
+}
+
+function normalizeRuleDictionary(input = {}) {
+  const normalized = {};
+  let changed = false;
+  Object.entries(input).forEach(([key, value]) => {
+    if (typeof value !== "string") return;
+    const normalizedKey = sanitizeRuleKeyInput(key);
+    if (!normalizedKey) return;
+    if (normalizedKey !== key) changed = true;
+    normalized[normalizedKey] = value.trim();
+  });
+  return { normalized, changed };
+}
+
+async function ensureNormalizedRules() {
+  const { categorizationRules = {} } = await chrome.storage.local.get("categorizationRules");
+  const { normalized, changed } = normalizeRuleDictionary(categorizationRules);
+  if (changed) {
+    await chrome.storage.local.set({ categorizationRules: normalized });
+  }
+  return normalized;
 }
 
 initPromise.then(renderRules);

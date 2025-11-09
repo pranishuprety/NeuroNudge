@@ -36,12 +36,13 @@
   });
 
   // Count only; never read which key
+  // Count only; never read which key
   window.addEventListener(
     "keydown",
     () => {
       if (pageVisible && !privacyMode) count++;
     },
-    { passive: true }
+    { passive: true, capture: true }
   );
 
   // Batch-send every 5s if anything happened
