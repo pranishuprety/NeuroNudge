@@ -7,7 +7,8 @@
   "host_permissions": [
     "<all_urls>",
     "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "https://api.elevenlabs.io/*"
   ],
   "background": { "service_worker": "background.js", "type": "module" },
   "options_page": "options.html",
@@ -23,7 +24,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inspiration.html", "inspiration.js", "focus_guard.html", "focus_guard.js"],
+      "resources": ["inspiration.html", "inspiration.js", "focus_guard.html", "focus_guard.js", "offscreen.html", "offscreen.js"],
       "matches": ["<all_urls>"]
     }
   ],

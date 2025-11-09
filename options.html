@@ -619,6 +619,23 @@
 
         <div class="divider"></div>
 
+        <section class="parent-mode-section" aria-labelledby="voiceHeading">
+          <div class="section-heading" style="margin-bottom: 8px;">
+            <h2 id="voiceHeading">Voice Alerts</h2>
+            <p class="muted">Use ElevenLabs to read nudges aloud. Paste your API key and preferred voice ID (for example <code>EXAVITQu4vr4xnSDxMaL</code>).</p>
+          </div>
+          <div class="limit-grid" style="grid-template-columns: minmax(0, 2fr) minmax(0, 1.2fr);">
+            <input id="voiceApiKey" type="password" placeholder="ElevenLabs API key" autocomplete="off" />
+            <input id="voiceId" placeholder="Voice ID" autocomplete="off" />
+          </div>
+          <div class="actions" style="justify-content:flex-start; gap:12px;">
+            <button type="button" id="voiceSave" class="primary">Save Voice Settings</button>
+            <span id="voiceToast" class="toast"></span>
+          </div>
+        </section>
+
+        <div class="divider"></div>
+
         <div>
           <div class="section-heading" style="margin-bottom: 8px;">
             <h2>Domain Classification</h2>

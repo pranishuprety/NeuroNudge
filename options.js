@@ -103,6 +103,10 @@ const parentLimitMinutesInput = document.getElementById("parentLimitMinutes");
 const parentLimitTypeSelect = document.getElementById("parentLimitType");
 const addParentLimitBtn = document.getElementById("addParentLimit");
 const parentLimitListEl = document.getElementById("parentLimitList");
+const voiceApiKeyInput = document.getElementById("voiceApiKey");
+const voiceIdInput = document.getElementById("voiceId");
+const voiceSaveBtn = document.getElementById("voiceSave");
+const voiceToastEl = document.getElementById("voiceToast");
 
 const PARENT_MODE_CONFIG_KEY = "parentModeConfig";
 
@@ -365,6 +369,17 @@ async function refreshParentMode(showErrors = false) {
   });
 }
 
+async function hydrateVoiceSettings() {
+  if (!voiceApiKeyInput || !voiceIdInput) return;
+  const { elevenLabsApiKey = "", elevenLabsVoiceId = "" } = await chrome.storage.local.get([
+    "elevenLabsApiKey",
+    "elevenLabsVoiceId"
+  ]);
+  voiceApiKeyInput.value = elevenLabsApiKey || "";
+  voiceIdInput.value = elevenLabsVoiceId || "";
+  if (voiceToastEl) voiceToastEl.textContent = "";
+}
+
 function renderParentBlockedList(entries = [], enabled = false) {
   if (!parentBlockedListEl) return;
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -507,6 +522,7 @@ initPromise.then(() => {
   renderBannedHosts();
   setParentStatus("");
   refreshParentMode(true);
+  hydrateVoiceSettings();
 });
 
 function normalizeSiteLimitDictionary(input = {}) {
@@ -743,6 +759,33 @@ parentBlockedHostInput?.addEventListener("keydown", (event) => {
       addParentLimitBtn?.click();
     }
   });
+});
+
+voiceSaveBtn?.addEventListener("click", async () => {
+  const apiKey = (voiceApiKeyInput?.value || "").trim();
+  const voiceId = (voiceIdInput?.value || "").trim();
+  voiceSaveBtn.disabled = true;
+  try {
+    await chrome.storage.local.set({
+      elevenLabsApiKey: apiKey,
+      elevenLabsVoiceId: voiceId,
+      elevenLabsModelId: "eleven_monolingual_v1"
+    });
+    await chrome.runtime.sendMessage({ type: "elevenlabs:configUpdated" }).catch(() => {});
+    if (voiceToastEl) {
+      voiceToastEl.textContent = apiKey && voiceId ? "ElevenLabs voice saved." : "Voice settings cleared.";
+    }
+  } catch (error) {
+    console.error("Voice settings save failed", error);
+    if (voiceToastEl) voiceToastEl.textContent = error?.message || "Unable to save voice settings.";
+  } finally {
+    voiceSaveBtn.disabled = false;
+    if (voiceToastEl) {
+      setTimeout(() => {
+        voiceToastEl.textContent = "";
+      }, 3000);
+    }
+  }
 });
 
 parentNotifyToggle?.addEventListener("change", async (event) => {

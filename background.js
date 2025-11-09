@@ -37,6 +37,8 @@ const BANNED_HOSTS_KEY = "bannedHosts";
 const parentMode = new ParentModeManager();
 const parentAlertHistory = new Map();
 const PARENT_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+const ELEVEN_CONFIG_TTL_MS = 5 * 60 * 1000;
+let elevenLabsCache = { apiKey: null, voiceId: null, modelId: "eleven_monolingual_v1", fetchedAt: 0 };
 
 let flowState = { active: false, startAt: 0 };
 let lastBreakNudgeAt = 0;
@@ -344,6 +346,11 @@ async function bootstrap() {
   });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "elevenlabs:configUpdated") {
+    elevenLabsCache = { apiKey: null, voiceId: null, modelId: "eleven_monolingual_v1", fetchedAt: 0 };
+    sendResponse?.({ success: true });
+    return false;
+  }
   if (message?.type === "kpm:batch") {
     handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
     return false;
@@ -1552,7 +1559,9 @@ async function deliverNudge(state, triggerSource) {
   });
 }
 
-function speakMessage(message) {
+async function speakMessage(message) {
+  const usedElevenLabs = await speakWithElevenLabs(message);
+  if (usedElevenLabs) return;
   if (!chrome.tts) return;
   chrome.tts.speak(message, {
     lang: "en-US",
@@ -1560,6 +1569,88 @@ function speakMessage(message) {
     rate: 1,
     voiceName: undefined
   });
+}
+
+async function speakWithElevenLabs(message) {
+  try {
+    const config = await getElevenLabsConfig();
+    if (!config.apiKey || !config.voiceId) return false;
+    await ensureOffscreenDocument();
+    const audioUrl = await fetchElevenLabsAudio(config, message);
+    if (!audioUrl) return false;
+    const response = await chrome.runtime.sendMessage({
+      type: "elevenlabs:play",
+      payload: { audioUrl, volume: 1 }
+    });
+    if (!response?.ok) {
+      URL.revokeObjectURL(audioUrl);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn("ElevenLabs playback failed", error);
+    return false;
+  }
+}
+
+async function getElevenLabsConfig() {
+  const now = Date.now();
+  if (now - elevenLabsCache.fetchedAt < ELEVEN_CONFIG_TTL_MS && elevenLabsCache.apiKey && elevenLabsCache.voiceId) {
+    return elevenLabsCache;
+  }
+  const {
+    elevenLabsApiKey,
+    elevenLabsVoiceId,
+    elevenLabsModelId
+  } = await chrome.storage.local.get(["elevenLabsApiKey", "elevenLabsVoiceId", "elevenLabsModelId"]);
+  elevenLabsCache = {
+    apiKey: typeof elevenLabsApiKey === "string" && elevenLabsApiKey.trim() ? elevenLabsApiKey.trim() : null,
+    voiceId: typeof elevenLabsVoiceId === "string" && elevenLabsVoiceId.trim() ? elevenLabsVoiceId.trim() : null,
+    modelId: typeof elevenLabsModelId === "string" && elevenLabsModelId.trim()
+      ? elevenLabsModelId.trim()
+      : "eleven_monolingual_v1",
+    fetchedAt: now
+  };
+  return elevenLabsCache;
+}
+
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error("Offscreen API unavailable in this environment.");
+  }
+  const hasDoc = await chrome.offscreen.hasDocument?.();
+  if (hasDoc) return;
+  await chrome.offscreen.createDocument({
+    url: "offscreen.html",
+    reasons: ["AUDIO_PLAYBACK"],
+    justification: "Play ElevenLabs voice notifications"
+  });
+}
+
+async function fetchElevenLabsAudio(config, text) {
+  const endpoint = `https://api.elevenlabs.io/v1/text-to-speech/${config.voiceId}`;
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "audio/mpeg",
+      "xi-api-key": config.apiKey
+    },
+    body: JSON.stringify({
+      text,
+      model_id: config.modelId || "eleven_monolingual_v1",
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.7
+      }
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`ElevenLabs responded with ${response.status}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const blob = new Blob([arrayBuffer], { type: "audio/mpeg" });
+  return URL.createObjectURL(blob);
 }
 
 function formatClock(timestamp) {
