@@ -332,39 +332,61 @@ body {
 }
 
 .site-footer {
-  border-top: 1px solid rgba(148, 163, 184, 0.06);
-  background: rgba(5, 12, 28, 0.9);
-  padding: 40px 0;
+  position: relative;
   margin-top: 60px;
+  padding: 18px 0;
+  overflow: hidden;
+  border-top: 1px solid rgba(148, 163, 184, 0.08);
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(56, 189, 248, 0.18), transparent 65%),
+    radial-gradient(140% 160% at 0% 100%, rgba(59, 130, 246, 0.2), transparent 60%),
+    linear-gradient(135deg, #0b1226, #101b2f 55%, #0f1729);
 }
 
 .footer-inner {
   display: flex;
-  flex-direction: column;
-  gap: 28px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.footer-inner::before {
+  content: "";
+  position: absolute;
+  inset: -40px 60% auto -20%;
+  background: radial-gradient(circle, rgba(34, 211, 238, 0.28), transparent 70%);
+  opacity: 0.7;
+  pointer-events: none;
+  filter: blur(4px);
+  z-index: -1;
 }
 
 .footer-copy {
-  color: var(--text-muted);
-  max-width: 480px;
-  margin: 10px 0 0;
+  color: rgba(226, 232, 240, 0.86);
+  margin: 0;
+  line-height: 1.5;
+  white-space: normal;
+  font-size: 0.95rem;
 }
 
-.footer-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 18px;
-}
-
-.footer-links a {
-  color: var(--text-secondary);
+.footer-copy a {
+  color: #facc15;
+  font-weight: 600;
   text-decoration: none;
-  font-weight: 500;
+  border-bottom: 1px solid transparent;
+  padding-bottom: 1px;
+  transition: color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.footer-links a:hover,
-.footer-links a:focus-visible {
-  color: var(--accent);
+.footer-copy a:hover,
+.footer-copy a:focus-visible {
+  color: #f97316;
+  border-color: rgba(249, 115, 22, 0.6);
+  box-shadow: 0 8px 20px rgba(249, 115, 22, 0.25);
 }
 
 @media (max-width: 720px) {
@@ -461,6 +483,17 @@ body {
 
   .section-heading {
     margin-bottom: 28px;
+  }
+
+  .footer-inner {
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .footer-copy {
+    white-space: normal;
+    text-align: center;
   }
 }
 
