@@ -60,6 +60,7 @@ let rulesConfig = { ...DEFAULT_RULES };
 let kpmMinuteBucket = 0;
 let kpmMinuteTs = null;
 let blockedDistractingHosts = new Set();
+let blockedHostMeta = new Map();
 let bannedHosts = new Set();
 let siteLimits = new Map();
 
@@ -147,6 +148,21 @@ async function bootstrap() {
   });
 
   chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.url) {
+      const host = normalizeHost(changeInfo.url);
+      if (host && isHostBanned(host)) {
+        enforceBannedHost({ tabId, host, url: changeInfo.url }, { host }).catch((error) =>
+          console.warn("Banned host update enforcement failed", error)
+        );
+        return;
+      }
+      if (host && blockedDistractingHosts.has(host)) {
+        enforceBlockedHost({ tabId, host, url: changeInfo.url }, { host }).catch((error) =>
+          console.warn("Blocked host update enforcement failed", error)
+        );
+        return;
+      }
+    }
     if (tab?.active && changeInfo.url) {
       handleTick("tab update", { refreshActive: false })
         .catch((error) => console.warn("Tick on tab update failed", error))
@@ -155,7 +171,40 @@ async function bootstrap() {
   });
 
   chrome.tabs.onCreated.addListener((tab) => {
+    const candidateUrl = tab?.pendingUrl || tab?.url || "";
+    if (candidateUrl) {
+      const host = normalizeHost(candidateUrl);
+      if (host && isHostBanned(host)) {
+        enforceBannedHost({ tabId: tab.id, host, url: candidateUrl }, { host }).catch((error) =>
+          console.warn("Banned host create enforcement failed", error)
+        );
+        return;
+      }
+      if (host && blockedDistractingHosts.has(host)) {
+        enforceBlockedHost({ tabId: tab.id, host, url: candidateUrl }, { host }).catch((error) =>
+          console.warn("Blocked host create enforcement failed", error)
+        );
+        return;
+      }
+    }
     handleNewTab(tab).catch((error) => console.warn("Adaptive tab error", error));
+  });
+
+  chrome.webNavigation.onCommitted.addListener((details) => {
+    if (details.frameId !== 0) return;
+    const host = normalizeHost(details.url);
+    if (!host) return;
+    if (isHostBanned(host)) {
+      enforceBannedHost({ tabId: details.tabId, host, url: details.url }, { host }).catch((error) =>
+        console.warn("Banned host navigation enforcement failed", error)
+      );
+      return;
+    }
+    if (blockedDistractingHosts.has(host)) {
+      enforceBlockedHost({ tabId: details.tabId, host, url: details.url }, { host }).catch((error) =>
+        console.warn("Blocked host navigation enforcement failed", error)
+      );
+    }
   });
 
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -235,16 +284,22 @@ async function bootstrap() {
     }
   });
 
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.type === "kpm:batch") {
-      handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
-      return false;
-    }
-    if (message?.type === "nudges:trigger") {
-      evaluateStateAndNudge("manual", { force: true })
-        .then((state) => sendResponse({ state }))
-        .catch((error) => sendResponse({ error: error.message }));
-      return true;
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "kpm:batch") {
+    handleKpmBatch(message, sender).catch((error) => console.warn("KPM batch intake failed", error));
+    return false;
+  }
+  if (message?.type === "quotes:fetchRandom") {
+    fetchMotivationalQuote()
+      .then((quote) => sendResponse({ success: true, quote }))
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
+  }
+  if (message?.type === "nudges:trigger") {
+    evaluateStateAndNudge("manual", { force: true })
+      .then((state) => sendResponse({ state }))
+      .catch((error) => sendResponse({ error: error.message }));
+    return true;
     }
     if (message?.type === "activity:summary") {
       getNormalizedSummary()
@@ -260,6 +315,7 @@ async function bootstrap() {
     }
     if (message?.type === "extension:reset") {
       blockedDistractingHosts.clear();
+      blockedHostMeta.clear();
       persistBlockedHosts().catch((error) => console.warn("Blocked host reset failed", error));
       return false;
     }
@@ -334,7 +390,7 @@ async function refreshActiveTab() {
     });
   }
   if (isHostBanned(active.host)) {
-    await enforceBannedHost(active);
+    await enforceBannedHost(active, { host: active.host });
     lastTrackedHost = null;
     lastActiveTab = null;
     return;
@@ -342,7 +398,7 @@ async function refreshActiveTab() {
   lastTrackedHost = active.host || null;
   lastActiveTab = active;
   if (lastActiveTab.host && blockedDistractingHosts.has(lastActiveTab.host)) {
-    await enforceBlockedHost(lastActiveTab);
+    await enforceBlockedHost(lastActiveTab, { host: lastActiveTab.host });
     return;
   }
   try {
@@ -442,6 +498,7 @@ async function persistBlockedHosts() {
 async function clearBlockedHosts() {
   if (blockedDistractingHosts.size === 0) return;
   blockedDistractingHosts.clear();
+  blockedHostMeta.clear();
   await persistBlockedHosts();
 }
 
@@ -588,7 +645,7 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
   }
 
   if (isHostBanned(lastActiveTab.host)) {
-    await enforceBannedHost(lastActiveTab);
+    await enforceBannedHost(lastActiveTab, { host: lastActiveTab.host });
     lastActiveTab = null;
     lastTrackedHost = null;
     lastTickTs = now;
@@ -761,13 +818,13 @@ async function markFlow(kind, timestamp, startAt = 0) {
 
 async function maybeEnforceDistractingLimit(tab) {
   if (!tab || privacyMode) return;
-  const targetUrl = chrome.runtime.getURL("motivator.html");
+  const targetUrl = chrome.runtime.getURL("focus_guard.html");
   const tabUrl = tab.url || "";
   if (tabUrl.startsWith(targetUrl) || tabUrl.startsWith("chrome-extension://")) return;
   const host = tab.host || normalizeHost(tabUrl);
   if (!host) return;
   if (isHostBanned(host)) {
-    await enforceBannedHost({ ...tab, host });
+    await enforceBannedHost({ ...tab, host }, { host });
     return;
   }
 
@@ -807,6 +864,14 @@ async function maybeEnforceDistractingLimit(tab) {
       blockedDistractingHosts.add(host);
       await persistBlockedHosts();
     }
+    const limitMinutes = Math.round(triggered.seconds / 60);
+    blockedHostMeta.set(host, {
+      reason: "limit",
+      limitKind: triggered.reason,
+      limitSeconds: triggered.seconds,
+      limitMinutes,
+      host
+    });
 
     if (!alreadyHit) {
       const limitMinutes = Math.round(triggered.seconds / 60);
@@ -832,12 +897,18 @@ async function maybeEnforceDistractingLimit(tab) {
       }
     }
 
-    await enforceBlockedHost(tab);
+    await enforceBlockedHost(tab, {
+      reason: "limit",
+      host,
+      limitMinutes,
+      limitKind: triggered.reason
+    });
     return;
   }
 
   if (blockedDistractingHosts.has(host)) {
     blockedDistractingHosts.delete(host);
+    blockedHostMeta.delete(host);
     await persistBlockedHosts();
   }
 
@@ -912,12 +983,37 @@ async function logTimeForHost(host, addSeconds) {
   });
 }
 
-async function enforceBlockedHost(tab) {
+function buildFocusRedirectUrl({ reason, host, limitMinutes, limitKind } = {}) {
+  const base = chrome.runtime.getURL("focus_guard.html");
+  const params = new URLSearchParams();
+  if (reason) params.set("reason", reason);
+  if (host) params.set("host", host);
+  if (Number.isFinite(limitMinutes) && limitMinutes > 0) {
+    params.set("limitMinutes", String(Math.round(limitMinutes)));
+  }
+  if (limitKind) params.set("limitKind", limitKind);
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
+}
+
+async function enforceBlockedHost(tab, context = {}) {
   const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
   if (!tabId) return;
-  const host = tab.host || normalizeHost(tab.url || "");
+  const host = context.host || tab.host || normalizeHost(tab.url || "");
   if (!host || !blockedDistractingHosts.has(host)) return;
-  const targetUrl = chrome.runtime.getURL("motivator.html");
+  const storedMeta = blockedHostMeta.get(host) || {};
+  const reason = context.reason || storedMeta.reason || "limit";
+  const limitKind = context.limitKind || storedMeta.limitKind;
+  let limitMinutes = context.limitMinutes;
+  if (!Number.isFinite(limitMinutes) && Number.isFinite(storedMeta.limitMinutes)) {
+    limitMinutes = storedMeta.limitMinutes;
+  }
+  if (!Number.isFinite(limitMinutes) && Number.isFinite(storedMeta.limitSeconds)) {
+    limitMinutes = Math.round(storedMeta.limitSeconds / 60);
+  }
+  const targetUrl = buildFocusRedirectUrl({ reason, host, limitMinutes, limitKind });
+  lastActiveTab = null;
+  lastTrackedHost = null;
   try {
     await chrome.tabs.update(tabId, { url: targetUrl });
   } catch (error) {
@@ -925,17 +1021,32 @@ async function enforceBlockedHost(tab) {
   }
 }
 
-async function enforceBannedHost(tab) {
+async function enforceBannedHost(tab, context = {}) {
   const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
   if (!tabId) return;
-  const host = tab.host || normalizeHost(tab.url || "");
-  if (!isHostBanned(host)) return;
-  const targetUrl = chrome.runtime.getURL("banned.html");
+  const host = context.host || tab.host || normalizeHost(tab.url || "");
+  if (!host || !isHostBanned(host)) return;
+  const targetUrl = buildFocusRedirectUrl({ reason: "banned", host });
+  lastActiveTab = null;
+  lastTrackedHost = null;
   try {
     await chrome.tabs.update(tabId, { url: targetUrl });
   } catch (error) {
     console.warn("Banned host redirect failed", error);
   }
+}
+
+async function fetchMotivationalQuote() {
+  const endpoint = "https://api.quotable.io/random?maxLength=140";
+  const response = await fetch(endpoint, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+    mode: "cors"
+  });
+  if (!response.ok) {
+    throw new Error(`Quote API responded with ${response.status}`);
+  }
+  return response.json();
 }
 
 async function handleRiskResume(source = "adaptive_page") {

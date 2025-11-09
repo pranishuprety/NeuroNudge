@@ -3,7 +3,7 @@
   "name": "NeuroNudge",
   "version": "1.0.0",
   "description": "Privacy-first focus and mental-energy coach.",
-  "permissions": ["idle", "storage", "notifications", "tabs", "tts", "alarms", "windows"],
+  "permissions": ["idle", "storage", "notifications", "tabs", "tts", "alarms", "windows", "webNavigation"],
   "host_permissions": [
     "<all_urls>",
     "https://api.openai.com/*",
@@ -23,7 +23,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inspiration.html", "inspiration.js"],
+      "resources": ["inspiration.html", "inspiration.js", "focus_guard.html", "focus_guard.js"],
       "matches": ["<all_urls>"]
     }
   ],
