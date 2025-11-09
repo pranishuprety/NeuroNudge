@@ -30,7 +30,7 @@ const GOAL_STATUS_STATES = {
 };
 let ruleCache = { exact: new Map(), domains: new Map(), contains: [], regex: [] };
 const BLOCKED_HOSTS_KEY = "blockedDistractingHosts";
-
+const BANNED_HOSTS_KEY = "bannedHosts";
 
 let flowState = { active: false, startAt: 0 };
 let lastBreakNudgeAt = 0;
@@ -60,6 +60,7 @@ let rulesConfig = { ...DEFAULT_RULES };
 let kpmMinuteBucket = 0;
 let kpmMinuteTs = null;
 let blockedDistractingHosts = new Set();
+let bannedHosts = new Set();
 let siteLimits = new Map();
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -82,24 +83,38 @@ bootstrap();
 async function bootstrap() {
   chrome.idle.setDetectionInterval(IDLE_DETECTION_INTERVAL_SECONDS);
 
-  const [
-    {
-      privacyMode: storedPrivacy = false,
-      [BLOCKED_HOSTS_KEY]: storedBlockedHosts = []
-    },
-    summaryStore,
-    storedState
-  ] = await Promise.all([
-    chrome.storage.local.get(["privacyMode", BLOCKED_HOSTS_KEY]),
+  const [storedLocal, summaryStore, storedState] = await Promise.all([
+    chrome.storage.local.get(["privacyMode", BLOCKED_HOSTS_KEY, BANNED_HOSTS_KEY, "kpmLive"]),
     getNormalizedSummary(),
     chrome.storage.local.get("focusState")
   ]);
+
+  const {
+    privacyMode: storedPrivacy = false,
+    [BLOCKED_HOSTS_KEY]: storedBlockedHosts = [],
+    [BANNED_HOSTS_KEY]: storedBannedHosts = [],
+    kpmLive: storedKpmLive
+  } = storedLocal;
 
   privacyMode = storedPrivacy;
   if (Array.isArray(storedBlockedHosts)) {
     blockedDistractingHosts = new Set(
       storedBlockedHosts.filter((entry) => typeof entry === "string" && entry)
     );
+  }
+  if (Array.isArray(storedBannedHosts)) {
+    const normalizedBanned = storedBannedHosts
+      .map((entry) => (typeof entry === "string" ? normalizeHostKey(entry) : ""))
+      .filter((entry) => entry);
+    bannedHosts = new Set(normalizedBanned);
+  }
+  if (storedKpmLive && typeof storedKpmLive === "object") {
+    const ts = Number(storedKpmLive.minuteTs);
+    const pending = Number(storedKpmLive.pending);
+    if (Number.isFinite(ts) && ts > 0 && Number.isFinite(pending) && pending > 0) {
+      kpmMinuteTs = ts;
+      kpmMinuteBucket = Math.max(0, Math.round(pending));
+    }
   }
   lastFocusState = storedState.focusState || null;
   await chrome.storage.local.set({ [SUMMARY_KEY]: summaryStore });
@@ -192,6 +207,11 @@ async function bootstrap() {
       loadSiteLimits().catch((error) => console.warn("Site limit cache refresh failed", error));
       clearBlockedHosts().catch((error) => console.warn("Blocked hosts reset failed", error));
     }
+    if (changes[BANNED_HOSTS_KEY]) {
+      loadBannedHosts()
+        .then(() => refreshActiveTab().catch((error) => console.warn("Banned host refresh failed", error)))
+        .catch((error) => console.warn("Banned host cache refresh failed", error));
+    }
   });
 
   chrome.alarms.create("neuro-nudge-eval", {
@@ -229,6 +249,12 @@ async function bootstrap() {
     if (message?.type === "activity:summary") {
       getNormalizedSummary()
         .then((summary) => sendResponse({ summary }))
+        .catch((error) => sendResponse({ error: error.message }));
+      return true;
+    }
+    if (message?.type === "risk:resumeFlow") {
+      handleRiskResume(message?.source)
+        .then(() => sendResponse({ resumed: true }))
         .catch((error) => sendResponse({ error: error.message }));
       return true;
     }
@@ -307,10 +333,16 @@ async function refreshActiveTab() {
       summary.domainSwitches = summary.domainSwitches.slice(-20);
     });
   }
+  if (isHostBanned(active.host)) {
+    await enforceBannedHost(active);
+    lastTrackedHost = null;
+    lastActiveTab = null;
+    return;
+  }
   lastTrackedHost = active.host || null;
   lastActiveTab = active;
   if (lastActiveTab.host && blockedDistractingHosts.has(lastActiveTab.host)) {
-    await enforceBlockedHost(lastActiveTab, "blocked");
+    await enforceBlockedHost(lastActiveTab);
     return;
   }
   try {
@@ -387,6 +419,18 @@ async function loadSiteLimits() {
     map.set(normalized, seconds);
   }
   siteLimits = map;
+}
+
+async function loadBannedHosts() {
+  const { [BANNED_HOSTS_KEY]: storedBannedHosts = [] } = await chrome.storage.local.get(BANNED_HOSTS_KEY);
+  if (Array.isArray(storedBannedHosts)) {
+    const normalized = storedBannedHosts
+      .map((entry) => (typeof entry === "string" ? normalizeHostKey(entry) : ""))
+      .filter((entry) => typeof entry === "string" && entry);
+    bannedHosts = new Set(normalized);
+  } else {
+    bannedHosts = new Set();
+  }
 }
 
 async function persistBlockedHosts() {
@@ -496,6 +540,19 @@ function normalizeHostKey(raw) {
   return base;
 }
 
+function isHostBanned(host) {
+  if (!host) return false;
+  const normalized = normalizeHostKey(host);
+  if (!normalized) return false;
+  if (bannedHosts.has(normalized)) return true;
+  for (const entry of bannedHosts) {
+    if (normalized === entry || normalized.endsWith(`.${entry}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function getSiteLimitSeconds(host) {
   if (!host) return null;
   const normalized = normalizeHostKey(host);
@@ -527,6 +584,15 @@ async function handleTick(reason = "alarm", { refreshActive: shouldRefresh = tru
     if (shouldRefresh) {
       await refreshActiveTab();
     }
+    return;
+  }
+
+  if (isHostBanned(lastActiveTab.host)) {
+    await enforceBannedHost(lastActiveTab);
+    lastActiveTab = null;
+    lastTrackedHost = null;
+    lastTickTs = now;
+    await chrome.storage.local.set({ lastTickTs: now });
     return;
   }
 
@@ -659,15 +725,6 @@ async function appendNudge(entry) {
   await chrome.storage.local.set({ nudgeLog: payload });
 }
 
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "nudges:trigger") {
-    appendNudge({ message: "Manual nudge sent.", state: "manual" }).catch((error) =>
-      console.warn("Manual append failed", error)
-    );
-  }
-  return false;
-});
-
 async function updateFlowWindow() {
   const { dailySummary = {} } = await chrome.storage.local.get("dailySummary");
   const summary = dailySummary[todayKey()];
@@ -709,6 +766,10 @@ async function maybeEnforceDistractingLimit(tab) {
   if (tabUrl.startsWith(targetUrl) || tabUrl.startsWith("chrome-extension://")) return;
   const host = tab.host || normalizeHost(tabUrl);
   if (!host) return;
+  if (isHostBanned(host)) {
+    await enforceBannedHost({ ...tab, host });
+    return;
+  }
 
   const limits = [];
   const hostIsDistracting = isDistractingHost(host);
@@ -862,6 +923,35 @@ async function enforceBlockedHost(tab) {
   } catch (error) {
     console.warn("Blocked host redirect failed", error);
   }
+}
+
+async function enforceBannedHost(tab) {
+  const tabId = typeof tab.tabId === "number" ? tab.tabId : tab.id;
+  if (!tabId) return;
+  const host = tab.host || normalizeHost(tab.url || "");
+  if (!isHostBanned(host)) return;
+  const targetUrl = chrome.runtime.getURL("banned.html");
+  try {
+    await chrome.tabs.update(tabId, { url: targetUrl });
+  } catch (error) {
+    console.warn("Banned host redirect failed", error);
+  }
+}
+
+async function handleRiskResume(source = "adaptive_page") {
+  const now = Date.now();
+  const { riskEngineMeta = {}, riskEngineStatus = {} } = await chrome.storage.local.get([
+    "riskEngineMeta",
+    "riskEngineStatus"
+  ]);
+  const nextMeta = { ...riskEngineMeta, resetActiveUntil: 0, lastResumeAt: now, lastResumeSource: source };
+  const nextStatus = {
+    ...riskEngineStatus,
+    resetActive: false,
+    lastResumeAt: now,
+    lastResumeSource: source
+  };
+  await chrome.storage.local.set({ riskEngineMeta: nextMeta, riskEngineStatus: nextStatus });
 }
 
 function pruneOldDays(log, currentDayStr) {

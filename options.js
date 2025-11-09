@@ -88,6 +88,9 @@ const siteLimitHostInput = document.getElementById("siteLimitHost");
 const siteLimitMinutesInput = document.getElementById("siteLimitMinutes");
 const addSiteLimitBtn = document.getElementById("addSiteLimit");
 const siteLimitListEl = document.getElementById("siteLimitList");
+const bannedHostInput = document.getElementById("bannedHost");
+const addBannedHostBtn = document.getElementById("addBannedHost");
+const bannedListEl = document.getElementById("bannedList");
 
 addRuleBtn?.addEventListener("click", async () => {
   const key = (ruleKeyEl?.value || "").trim();
@@ -148,6 +151,18 @@ addSiteLimitBtn?.addEventListener("click", async () => {
   await renderSiteLimits();
 });
 
+addBannedHostBtn?.addEventListener("click", async () => {
+  const host = sanitizeBannedHostInput(bannedHostInput?.value || "");
+  if (!host) return;
+  const hosts = await ensureNormalizedBannedHosts();
+  if (!hosts.includes(host)) {
+    hosts.push(host);
+    await chrome.storage.local.set({ bannedHosts: hosts });
+  }
+  if (bannedHostInput) bannedHostInput.value = "";
+  await renderBannedHosts();
+});
+
 async function renderSiteLimits() {
   if (!siteLimitListEl) return;
   const limits = await ensureNormalizedSiteLimits();
@@ -170,6 +185,32 @@ async function renderSiteLimits() {
       delete limitsToUpdate[hostKey];
       await chrome.storage.local.set({ distractingSiteLimits: limitsToUpdate });
       await renderSiteLimits();
+    });
+  });
+}
+
+async function renderBannedHosts() {
+  if (!bannedListEl) return;
+  const hosts = await ensureNormalizedBannedHosts();
+  if (!hosts.length) {
+    bannedListEl.innerHTML = `<li><em class="muted">No banned sites yet.</em></li>`;
+    return;
+  }
+  const sorted = [...hosts].sort();
+  bannedListEl.innerHTML = sorted
+    .map(
+      (host) =>
+        `<li><span>${sanitize(host)}</span>
+      <button type="button" data-host="${encodeURIComponent(host)}" class="secondary">Remove</button></li>`
+    )
+    .join("");
+  bannedListEl.querySelectorAll("button[data-host]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const target = decodeURIComponent(btn.getAttribute("data-host") || "");
+      const current = await ensureNormalizedBannedHosts();
+      const next = current.filter((entry) => entry !== target);
+      await chrome.storage.local.set({ bannedHosts: next });
+      await renderBannedHosts();
     });
   });
 }
@@ -208,6 +249,14 @@ function sanitizeRuleKeyInput(rawKey) {
   return base.toLowerCase();
 }
 
+function sanitizeBannedHostInput(rawKey) {
+  const host = sanitizeRuleKeyInput(rawKey);
+  if (!host) return "";
+  const regexSpecial = /[*^$+?()[\]{}|\\]/;
+  if (regexSpecial.test(host)) return "";
+  return host;
+}
+
 function normalizeRuleDictionary(input = {}) {
   const normalized = {};
   let changed = false;
@@ -233,6 +282,7 @@ async function ensureNormalizedRules() {
 initPromise.then(() => {
   renderRules();
   renderSiteLimits();
+  renderBannedHosts();
 });
 
 function normalizeSiteLimitDictionary(input = {}) {
@@ -254,6 +304,29 @@ async function ensureNormalizedSiteLimits() {
   const { normalized, changed } = normalizeSiteLimitDictionary(distractingSiteLimits);
   if (changed) {
     await chrome.storage.local.set({ distractingSiteLimits: normalized });
+  }
+  return normalized;
+}
+
+async function ensureNormalizedBannedHosts() {
+  const { bannedHosts = [] } = await chrome.storage.local.get("bannedHosts");
+  const normalized = [];
+  const seen = new Set();
+  let changed = !Array.isArray(bannedHosts);
+  if (Array.isArray(bannedHosts)) {
+    bannedHosts.forEach((entry) => {
+      const host = sanitizeBannedHostInput(entry);
+      if (!host || seen.has(host)) {
+        if (host) changed = true;
+        return;
+      }
+      if (host !== entry) changed = true;
+      seen.add(host);
+      normalized.push(host);
+    });
+  }
+  if (changed) {
+    await chrome.storage.local.set({ bannedHosts: normalized });
   }
   return normalized;
 }

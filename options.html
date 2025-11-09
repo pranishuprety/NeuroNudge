@@ -508,6 +508,22 @@
 
         <div>
           <div class="section-heading" style="margin-bottom: 8px;">
+            <h2>Banned sites</h2>
+            <p class="muted">These sites stay blocked until you remove them from this list.</p>
+          </div>
+          <div class="limit-grid">
+            <input id="bannedHost" placeholder="e.g. twitter.com" />
+            <div class="limit-actions">
+              <button type="button" id="addBannedHost" class="primary">Add Banned Site</button>
+            </div>
+          </div>
+          <ul id="bannedList" class="limit-list"></ul>
+        </div>
+
+        <div class="divider"></div>
+
+        <div>
+          <div class="section-heading" style="margin-bottom: 8px;">
             <h2>Domain Classification</h2>
             <p>Map hosts or regex patterns to a focus class so nudges adapt across your favorite tools.</p>
           </div>

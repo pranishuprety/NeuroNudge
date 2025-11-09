@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Site Blocked</title>
+  <style>
+    body {
+      font-family: "Inter", system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+      color: #f8fafc;
+      text-align: center;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 32px;
+      margin-bottom: 16px;
+    }
+    p {
+      font-size: 18px;
+      max-width: 520px;
+      line-height: 1.5;
+      color: #cbd5f5;
+    }
+    button {
+      margin-top: 28px;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 999px;
+      background: #38bdf8;
+      color: #0f172a;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover,
+    button:focus {
+      background: #22d3ee;
+    }
+  </style>
+</head>
+<body>
+  <h1>Take a Different Path</h1>
+  <p>This site is on your banned list in NeuroNudge. Close the tab or adjust the list in Settings if you want to allow it again.</p>
+  <button id="openSettings" type="button">Review Settings</button>
+
+  <script>
+    document.getElementById("openSettings").addEventListener("click", () => {
+      if (chrome?.runtime?.openOptionsPage) {
+        chrome.runtime.openOptionsPage();
+      } else {
+        window.open(chrome.runtime.getURL("options.html"), "_blank", "noopener");
+      }
+    });
+  </script>
+</body>
+</html>
